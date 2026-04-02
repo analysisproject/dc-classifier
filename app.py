@@ -1,10 +1,8 @@
 import io
-import math
 import os
-import subprocess
-import tempfile
+import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import joblib
 import numpy as np
@@ -15,374 +13,432 @@ import streamlit.components.v1 as components
 import torch
 from PIL import Image
 
+# ============================================================
+# Page config
+# ============================================================
+st.set_page_config(
+    page_title="KakaoMap Data Center Classifier",
+    page_icon="🛰️",
+    layout="wide",
+)
 
-st.set_page_config(page_title="KakaoMap Data Center Classifier", layout="wide")
+# ============================================================
+# Constants
+# ============================================================
+ARTIFACT_DIR = Path("artifacts")
+LINEARPROBE_PATH = ARTIFACT_DIR / "linearprobe.joblib"
+CENTROIDS_PATH = ARTIFACT_DIR / "centroids.npz"
 
-APP_DIR = Path(__file__).resolve().parent
-ARTIFACTS_DIR = APP_DIR / "artifacts"
-DEFAULT_JS_KEY = "be08d23343801208f920082c12ebd18f"
-DEFAULT_REST_KEY = "2462cfd32ba9f050882d01198fdf3c8f"
-MODEL_NAME = "ViT-B-32"
-PRETRAINED = "openai"
+DEFAULT_MODEL_NAME = "ViT-B-32"
+DEFAULT_PRETRAINED = "openai"
 
-DEFAULT_POS_PROMPTS = [
+POS_PROMPTS = [
     "a satellite image of a data center",
-    "an aerial photo of a data center facility",
-    "aerial view of a data center campus",
-    "a satellite image of a large industrial building with cooling equipment and secure perimeter",
-    "a satellite image of a server farm building",
+    "an aerial photo of a data center building",
+    "aerial view of a large data center facility",
+    "satellite view of an industrial data center campus",
+    "a data center with rooftop cooling units seen from above",
 ]
 
-DEFAULT_NEG_PROMPTS = [
+NEG_PROMPTS = [
     "a satellite image of a warehouse",
-    "an aerial photo of a logistics center",
     "aerial view of a factory",
-    "a satellite image of a residential block",
+    "an aerial photo of a logistics center",
     "a satellite image of an office building",
+    "aerial view of a commercial building complex",
 ]
 
+# ============================================================
+# Helpers: secrets / env
+# ============================================================
+def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
+    if key in st.secrets:
+        return st.secrets[key]
+    return os.getenv(key, default)
 
-def get_secret(name: str, default: str = "") -> str:
-    try:
-        return st.secrets[name]
-    except Exception:
-        return os.getenv(name, default)
+def require_api_key(name: str) -> Optional[str]:
+    return get_secret_or_env(name)
 
-
-KAKAO_JS_KEY = get_secret("KAKAO_JS_KEY", DEFAULT_JS_KEY)
-KAKAO_REST_KEY = get_secret("KAKAO_REST_KEY", DEFAULT_REST_KEY)
-
-
-@st.cache_data(show_spinner=False)
-def geocode_address(rest_api_key: str, address: str) -> Dict[str, Optional[str]]:
-    url = "https://dapi.kakao.com/v2/local/search/address.json"
-    headers = {"Authorization": f"KakaoAK {rest_api_key}"}
-    params = {"query": address}
-    response = requests.get(url, headers=headers, params=params, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    docs = data.get("documents", [])
-    if not docs:
-        raise ValueError("주소 검색 결과가 없습니다.")
-    top = docs[0]
-    return {
-        "lat": float(top["y"]),
-        "lng": float(top["x"]),
-        "address_name": top.get("address_name", address),
-        "road_address": (top.get("road_address") or {}).get("address_name"),
-    }
-
-
-@st.cache_data(show_spinner=False)
-def coord_to_address(rest_api_key: str, lat: float, lng: float) -> Dict[str, Optional[str]]:
-    url = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
-    headers = {"Authorization": f"KakaoAK {rest_api_key}"}
-    params = {"x": lng, "y": lat}
-    response = requests.get(url, headers=headers, params=params, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    docs = data.get("documents", [])
-    if not docs:
-        return {"address_name": None, "road_address": None}
-    top = docs[0]
-    return {
-        "address_name": (top.get("address") or {}).get("address_name"),
-        "road_address": (top.get("road_address") or {}).get("address_name"),
-    }
-
-
-
-def build_kakao_map_html(
-    js_key: str,
-    lat: float,
-    lng: float,
-    level: int = 2,
-    width: int = 1200,
-    height: int = 720,
-    map_type: str = "HYBRID",
-    marker: bool = True,
-) -> str:
-    marker_js = """
-      const marker = new kakao.maps.Marker({ position: center });
-      marker.setMap(map);
-    """ if marker else ""
-
-    return f"""
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    html, body {{ margin:0; padding:0; width:100%; height:100%; background:#fff; }}
-    #map {{ width:{width}px; height:{height}px; }}
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={js_key}"></script>
-  <script>
-    const center = new kakao.maps.LatLng({lat}, {lng});
-    const options = {{ center: center, level: {level} }};
-    const map = new kakao.maps.Map(document.getElementById('map'), options);
-    map.setMapTypeId(kakao.maps.MapTypeId.{map_type});
-    const mapTypeControl = new kakao.maps.MapTypeControl();
-    map.addControl(mapTypeControl, kakao.maps.ControlPosition.TOPRIGHT);
-    const zoomControl = new kakao.maps.ZoomControl();
-    map.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
-    {marker_js}
-  </script>
-</body>
-</html>
-"""
-
-
-
-def render_map_component(js_key: str, lat: float, lng: float, level: int, height: int = 560) -> None:
-    html = build_kakao_map_html(
-        js_key=js_key,
-        lat=lat,
-        lng=lng,
-        level=level,
-        width=1200,
-        height=height,
-        map_type="HYBRID",
-        marker=True,
+# ============================================================
+# Helpers: model loading
+# ============================================================
+@st.cache_resource(show_spinner=True)
+def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFAULT_PRETRAINED):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        model_name, pretrained=pretrained
     )
-    components.html(html, height=height + 10, scrolling=False)
-
-
-
-
-
-@st.cache_resource(show_spinner=False)
-def load_clip_model(model_name: str = MODEL_NAME, pretrained: str = PRETRAINED):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
     tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device).eval()
+    model = model.to(device)
+    model.eval()
     return model, preprocess, tokenizer, device
 
+@torch.no_grad()
+def encode_pil_image(model, preprocess, pil_img: Image.Image, device: str) -> np.ndarray:
+    x = preprocess(pil_img.convert("RGB")).unsqueeze(0).to(device)
+    feats = model.encode_image(x)
+    feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats.detach().cpu().numpy()[0]
 
 @torch.no_grad()
-def encode_image_bytes(image_bytes: bytes, model, preprocess, device: torch.device) -> np.ndarray:
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    tensor = preprocess(image).unsqueeze(0).to(device)
-    features = model.encode_image(tensor)
-    features = features / features.norm(dim=-1, keepdim=True)
-    return features.detach().cpu().numpy()[0]
-
-
-@torch.no_grad()
-def encode_texts(model, tokenizer, texts: List[str], device: torch.device) -> np.ndarray:
+def encode_texts(model, tokenizer, texts, device: str) -> np.ndarray:
     tokens = tokenizer(texts).to(device)
-    features = model.encode_text(tokens)
-    features = features / features.norm(dim=-1, keepdim=True)
-    return features.detach().cpu().numpy()
+    feats = model.encode_text(tokens)
+    feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats.detach().cpu().numpy()
 
+@st.cache_resource(show_spinner=False)
+def load_artifacts() -> Dict[str, Any]:
+    artifacts: Dict[str, Any] = {}
 
+    if LINEARPROBE_PATH.exists():
+        artifacts["linearprobe"] = joblib.load(LINEARPROBE_PATH)
+
+    if CENTROIDS_PATH.exists():
+        data = np.load(CENTROIDS_PATH)
+        artifacts["pos_centroid"] = data["pos_centroid"]
+        artifacts["neg_centroid"] = data["neg_centroid"]
+
+    return artifacts
 
 def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
+    return 1.0 / (1.0 + np.exp(-x))
 
-
-
-def predict_zeroshot(
-    emb: np.ndarray,
+def classify_image(
+    pil_img: Image.Image,
+    mode: str,
     model,
+    preprocess,
     tokenizer,
-    device: torch.device,
-    pos_prompts: List[str],
-    neg_prompts: List[str],
-) -> Dict[str, float]:
-    pos_text = encode_texts(model, tokenizer, pos_prompts, device)
-    neg_text = encode_texts(model, tokenizer, neg_prompts, device)
-    sim_pos = emb @ pos_text.T
-    sim_neg = emb @ neg_text.T
-    raw_score = float(sim_pos.max() - sim_neg.max())
-    probability = float(sigmoid(raw_score * 5.0))
-    return {
-        "label": int(probability >= 0.5),
-        "probability": probability,
-        "raw_score": raw_score,
-        "max_pos_similarity": float(sim_pos.max()),
-        "max_neg_similarity": float(sim_neg.max()),
-        "mode": "zeroshot",
+    device: str,
+    artifacts: Dict[str, Any],
+) -> Dict[str, Any]:
+    img_emb = encode_pil_image(model, preprocess, pil_img, device)
+
+    result = {
+        "mode": mode,
+        "score": None,
+        "probability": None,
+        "label": None,
+        "details": {}
     }
 
+    if mode == "linearprobe":
+        if "linearprobe" not in artifacts:
+            raise RuntimeError("artifacts/linearprobe.joblib 파일이 없습니다.")
+        clf = artifacts["linearprobe"]
+        proba = float(clf.predict_proba(img_emb.reshape(1, -1))[0, 1])
+        result["score"] = proba
+        result["probability"] = proba
+        result["label"] = "데이터센터" if proba >= 0.5 else "비데이터센터"
+        return result
 
+    if mode == "centroid":
+        if "pos_centroid" not in artifacts or "neg_centroid" not in artifacts:
+            raise RuntimeError("artifacts/centroids.npz 파일이 없습니다.")
+        pos_cent = artifacts["pos_centroid"]
+        neg_cent = artifacts["neg_centroid"]
 
-def predict_centroid(emb: np.ndarray, centroid_path: Path) -> Dict[str, float]:
-    data = np.load(centroid_path)
-    pos_centroid = data["pos_centroid"]
-    neg_centroid = data["neg_centroid"]
-    sim_pos = float(emb @ pos_centroid)
-    sim_neg = float(emb @ neg_centroid)
-    raw_score = sim_pos - sim_neg
-    probability = float(sigmoid(raw_score * 8.0))
-    return {
-        "label": int(probability >= 0.5),
-        "probability": probability,
-        "raw_score": raw_score,
-        "max_pos_similarity": sim_pos,
-        "max_neg_similarity": sim_neg,
-        "mode": "centroid",
+        pos_cent = pos_cent / (np.linalg.norm(pos_cent) + 1e-9)
+        neg_cent = neg_cent / (np.linalg.norm(neg_cent) + 1e-9)
+
+        sim_pos = float(img_emb @ pos_cent)
+        sim_neg = float(img_emb @ neg_cent)
+        score = sim_pos - sim_neg
+        prob = float(sigmoid(score * 5.0))  # heuristic scaling
+
+        result["score"] = score
+        result["probability"] = prob
+        result["label"] = "데이터센터" if score > 0 else "비데이터센터"
+        result["details"] = {
+            "sim_pos": sim_pos,
+            "sim_neg": sim_neg,
+        }
+        return result
+
+    # zeroshot
+    text_emb_pos = encode_texts(model, tokenizer, POS_PROMPTS, device)
+    text_emb_neg = encode_texts(model, tokenizer, NEG_PROMPTS, device)
+
+    sim_pos = img_emb @ text_emb_pos.T
+    sim_neg = img_emb @ text_emb_neg.T
+
+    pos_max = float(sim_pos.max())
+    neg_max = float(sim_neg.max())
+    score = pos_max - neg_max
+    prob = float(sigmoid(score * 8.0))  # heuristic scaling
+
+    result["score"] = score
+    result["probability"] = prob
+    result["label"] = "데이터센터" if score > 0 else "비데이터센터"
+    result["details"] = {
+        "best_pos_similarity": pos_max,
+        "best_neg_similarity": neg_max,
     }
+    return result
 
+# ============================================================
+# Helpers: Kakao API
+# ============================================================
+def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, dict]]:
+    url = "https://dapi.kakao.com/v2/local/search/address.json"
+    headers = {"Authorization": f"KakaoAK {rest_key}"}
+    params = {"query": query}
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
 
+    docs = data.get("documents", [])
+    if not docs:
+        return None
 
-def predict_linearprobe(emb: np.ndarray, model_path: Path) -> Dict[str, float]:
-    clf = joblib.load(model_path)
-    probability = float(clf.predict_proba([emb])[0, 1])
-    raw_score = float(clf.decision_function([emb])[0]) if hasattr(clf, "decision_function") else probability
-    return {
-        "label": int(probability >= 0.5),
-        "probability": probability,
-        "raw_score": raw_score,
-        "mode": "linearprobe",
-    }
+    doc = docs[0]
+    lng = float(doc["x"])
+    lat = float(doc["y"])
+    return lat, lng, doc
 
+def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
+    url = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
+    headers = {"Authorization": f"KakaoAK {rest_key}"}
+    params = {"x": lng, "y": lat}
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    docs = data.get("documents", [])
+    return docs[0] if docs else None
 
+def build_kakao_map_html(js_key: str, lat: float, lng: float, level: int = 3, map_type: str = "HYBRID") -> str:
+    map_type_js = "kakao.maps.MapTypeId.HYBRID" if map_type.upper() == "HYBRID" else "kakao.maps.MapTypeId.SKYVIEW"
 
-def check_artifacts() -> Dict[str, bool]:
-    return {
-        "centroid": (ARTIFACTS_DIR / "centroids.npz").exists(),
-        "linearprobe": (ARTIFACTS_DIR / "linearprobe.joblib").exists(),
-    }
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8"/>
+        <style>
+            html, body {{
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+            }}
+            #map {{
+                width: 100%;
+                height: 100vh;
+            }}
+        </style>
+        <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={js_key}"></script>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            var container = document.getElementById('map');
+            var options = {{
+                center: new kakao.maps.LatLng({lat}, {lng}),
+                level: {level}
+            }};
+            var map = new kakao.maps.Map(container, options);
+            map.setMapTypeId({map_type_js});
 
+            var markerPosition = new kakao.maps.LatLng({lat}, {lng});
+            var marker = new kakao.maps.Marker({{
+                position: markerPosition
+            }});
+            marker.setMap(map);
 
+            var iwContent = '<div style="padding:6px 10px;font-size:12px;">분석 대상 위치</div>';
+            var infowindow = new kakao.maps.InfoWindow({{
+                content: iwContent
+            }});
+            infowindow.open(map, marker);
+        </script>
+    </body>
+    </html>
+    """
+    return html
 
-def parse_coordinate_inputs(lat_str: str, lng_str: str) -> Tuple[float, float]:
-    lat = float(lat_str.strip())
-    lng = float(lng_str.strip())
-    if not (-90 <= lat <= 90):
-        raise ValueError("위도는 -90~90 범위여야 합니다.")
-    if not (-180 <= lng <= 180):
-        raise ValueError("경도는 -180~180 범위여야 합니다.")
-    return lat, lng
+# ============================================================
+# UI
+# ============================================================
+st.title("🛰️ KakaoMap Data Center Classifier")
+st.caption("주소 또는 GPS 좌표로 위치를 확인하고, 위성 이미지 파일을 업로드해 데이터센터 여부를 분류합니다.")
 
-
-st.title("KakaoMap 기반 데이터센터 분류 대시보드")
-st.caption("주소 또는 GPS 좌표를 입력하면 카카오 위성지도를 캡처하고, CLIP 기반 모델로 데이터센터 여부를 예측합니다.")
-
-with st.sidebar:
-    st.header("입력 설정")
-    input_mode = st.radio("입력 방식", ["주소", "GPS 좌표"], horizontal=True)
-    level = st.slider("지도 확대 레벨", min_value=0, max_value=14, value=2)
-    inference_mode = st.selectbox(
-        "분류 방식",
-        ["zeroshot", "centroid", "linearprobe"],
-        index=0,
-        help="centroid/linearprobe는 artifacts 폴더에 학습 결과 파일이 있어야 동작합니다.",
-    )
-
-    st.markdown("---")
-    st.subheader("API 키")
-    st.text_input("Kakao JavaScript Key", value=KAKAO_JS_KEY, key="js_key")
-    st.text_input("Kakao REST API Key", value=KAKAO_REST_KEY, key="rest_key")
-
-    st.markdown("---")
-    st.subheader("Zero-shot Prompt")
-    pos_prompt_text = st.text_area("Positive prompts", value="\n".join(DEFAULT_POS_PROMPTS), height=140)
-    neg_prompt_text = st.text_area("Negative prompts", value="\n".join(DEFAULT_NEG_PROMPTS), height=140)
-
-artifact_status = check_artifacts()
-info_col1, info_col2, info_col3 = st.columns(3)
-info_col1.metric("centroid artifact", "있음" if artifact_status["centroid"] else "없음")
-info_col2.metric("linearprobe artifact", "있음" if artifact_status["linearprobe"] else "없음")
-info_col3.metric("device", "CUDA" if torch.cuda.is_available() else "CPU")
-
-query_address = ""
-lat = lng = None
-
-if input_mode == "주소":
-    query_address = st.text_input("주소 입력", placeholder="예: 경기도 성남시 분당구 불정로 6")
-else:
-    col_lat, col_lng = st.columns(2)
-    with col_lat:
-        lat_input = st.text_input("위도 (lat)", value="37.3947")
-    with col_lng:
-        lng_input = st.text_input("경도 (lng)", value="127.1112")
-
-run_button = st.button("지도 불러오고 분류하기", type="primary", use_container_width=True)
-
-if run_button:
-    js_key = st.session_state["js_key"].strip()
-    rest_key = st.session_state["rest_key"].strip()
-    pos_prompts = [x.strip() for x in pos_prompt_text.splitlines() if x.strip()]
-    neg_prompts = [x.strip() for x in neg_prompt_text.splitlines() if x.strip()]
-
-    try:
-        if not js_key:
-            raise ValueError("JavaScript Key가 필요합니다.")
-
-        if input_mode == "주소":
-            if not rest_key:
-                raise ValueError("주소 검색에는 REST API Key가 필요합니다.")
-            if not query_address.strip():
-                raise ValueError("주소를 입력해 주세요.")
-            geo = geocode_address(rest_key, query_address.strip())
-            lat = float(geo["lat"])
-            lng = float(geo["lng"])
-            resolved_address = geo.get("road_address") or geo.get("address_name") or query_address.strip()
-        else:
-            lat, lng = parse_coordinate_inputs(lat_input, lng_input)
-            resolved = coord_to_address(rest_key, lat, lng) if rest_key else {"road_address": None, "address_name": None}
-            resolved_address = resolved.get("road_address") or resolved.get("address_name") or f"{lat}, {lng}"
-
-        st.success(f"대상 위치: {resolved_address}")
-
-        map_col, image_col = st.columns([1.2, 1.0])
-        with map_col:
-            st.subheader("카카오맵 상세 위성지도")
-            render_map_component(js_key, lat, lng, level, height=540)
-
-        with st.spinner("카카오 위성지도를 캡처하는 중입니다..."):
-            image_bytes = capture_kakao_map(js_key, lat, lng, level=level, map_type="SKYVIEW")
-
-        with image_col:
-            st.subheader("분류에 사용된 캡처 이미지")
-            st.image(image_bytes, use_container_width=True)
-
-        model, preprocess, tokenizer, device = load_clip_model()
-        emb = encode_image_bytes(image_bytes, model, preprocess, device)
-
-        if inference_mode == "zeroshot":
-            pred = predict_zeroshot(emb, model, tokenizer, device, pos_prompts, neg_prompts)
-        elif inference_mode == "centroid":
-            centroid_path = ARTIFACTS_DIR / "centroids.npz"
-            if not centroid_path.exists():
-                raise FileNotFoundError("artifacts/centroids.npz 파일이 없습니다. prepare_assets.py로 생성해 주세요.")
-            pred = predict_centroid(emb, centroid_path)
-        else:
-            linearprobe_path = ARTIFACTS_DIR / "linearprobe.joblib"
-            if not linearprobe_path.exists():
-                raise FileNotFoundError("artifacts/linearprobe.joblib 파일이 없습니다. prepare_assets.py로 생성해 주세요.")
-            pred = predict_linearprobe(emb, linearprobe_path)
-
-        st.markdown("---")
-        result_col1, result_col2, result_col3 = st.columns(3)
-        label_text = "데이터센터 가능성 높음" if pred["label"] == 1 else "데이터센터 가능성 낮음"
-        result_col1.metric("예측 결과", label_text)
-        result_col2.metric("확률", f"{pred['probability'] * 100:.2f}%")
-        result_col3.metric("모드", pred["mode"])
-
-        with st.expander("상세 점수 보기", expanded=True):
-            st.json({
-                "lat": lat,
-                "lng": lng,
-                "resolved_address": resolved_address,
-                **pred,
-            })
-
-    except Exception as exc:
-        st.error(str(exc))
-
-st.markdown("---")
-with st.expander("GitHub / 배포 안내", expanded=False):
+with st.expander("배포용 구조 안내", expanded=False):
     st.markdown(
         """
-- 공개 저장소에 실제 API 키를 올리면 노출됩니다.
-- 로컬에서는 `.streamlit/secrets.toml`을 사용하고, Streamlit Community Cloud에서는 **App settings → Secrets**에 같은 키를 넣으면 됩니다.
-- `centroid`, `linearprobe` 모드를 쓰려면 `artifacts/centroids.npz`, `artifacts/linearprobe.joblib`가 필요합니다.
+        이 버전은 Streamlit Cloud에서 안정적으로 돌아가도록 Playwright를 제거한 버전입니다.
+
+        현재 동작 방식:
+        - 주소/좌표 입력
+        - Kakao 지도 표시
+        - 사용자가 위성 캡처 이미지를 업로드
+        - CLIP 기반 데이터센터 분류
+
+        자동 캡처 없이도 URL 배포가 쉽고, 분류 모델 테스트와 데모에 적합합니다.
         """
     )
+
+js_key = require_api_key("KAKAO_JS_KEY")
+rest_key = require_api_key("KAKAO_REST_KEY")
+
+if not js_key or not rest_key:
+    st.error("KAKAO_JS_KEY, KAKAO_REST_KEY를 Streamlit Secrets 또는 환경변수에 설정해야 합니다.")
+    st.stop()
+
+# Sidebar
+st.sidebar.header("설정")
+mode = st.sidebar.selectbox(
+    "분류 모드",
+    options=["zeroshot", "centroid", "linearprobe"],
+    index=0,
+    help="artifacts 파일이 있으면 centroid / linearprobe 사용 가능",
+)
+map_type = st.sidebar.selectbox("지도 타입", ["HYBRID", "SKYVIEW"], index=0)
+level = st.sidebar.slider("지도 확대 수준(level)", min_value=1, max_value=8, value=3)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("모델 파일 상태")
+artifact_exists = {
+    "linearprobe.joblib": LINEARPROBE_PATH.exists(),
+    "centroids.npz": CENTROIDS_PATH.exists(),
+}
+for name, ok in artifact_exists.items():
+    st.sidebar.write(f"- {name}: {'있음' if ok else '없음'}")
+
+# Input tabs
+tab1, tab2 = st.tabs(["주소 입력", "GPS 좌표 입력"])
+
+resolved_lat = None
+resolved_lng = None
+resolved_text = None
+resolved_meta = None
+
+with tab1:
+    address_query = st.text_input("주소", placeholder="예: 서울특별시 중구 세종대로 110")
+    if st.button("주소 검색", use_container_width=True):
+        if not address_query.strip():
+            st.warning("주소를 입력하세요.")
+        else:
+            try:
+                result = geocode_address(rest_key, address_query.strip())
+                if result is None:
+                    st.warning("검색 결과가 없습니다.")
+                else:
+                    resolved_lat, resolved_lng, resolved_meta = result
+                    resolved_text = address_query.strip()
+                    st.session_state["lat"] = resolved_lat
+                    st.session_state["lng"] = resolved_lng
+                    st.session_state["resolved_text"] = resolved_text
+                    st.session_state["resolved_meta"] = resolved_meta
+            except Exception as e:
+                st.error(f"주소 검색 중 오류: {e}")
+
+with tab2:
+    lat_input = st.text_input("위도 (Latitude)", value=str(st.session_state.get("lat", "")))
+    lng_input = st.text_input("경도 (Longitude)", value=str(st.session_state.get("lng", "")))
+    if st.button("좌표 확인", use_container_width=True):
+        try:
+            resolved_lat = float(lat_input)
+            resolved_lng = float(lng_input)
+            st.session_state["lat"] = resolved_lat
+            st.session_state["lng"] = resolved_lng
+            rev = reverse_geocode(rest_key, resolved_lat, resolved_lng)
+            st.session_state["resolved_meta"] = rev
+            st.session_state["resolved_text"] = "좌표 직접 입력"
+        except Exception as e:
+            st.error(f"좌표 처리 중 오류: {e}")
+
+resolved_lat = st.session_state.get("lat")
+resolved_lng = st.session_state.get("lng")
+resolved_text = st.session_state.get("resolved_text")
+resolved_meta = st.session_state.get("resolved_meta")
+
+col1, col2 = st.columns([1.15, 0.85], gap="large")
+
+with col1:
+    st.subheader("1) 지도 보기")
+    if resolved_lat is not None and resolved_lng is not None:
+        st.write(f"**위도 / 경도**: {resolved_lat:.6f}, {resolved_lng:.6f}")
+        if resolved_meta:
+            st.json(resolved_meta, expanded=False)
+
+        map_html = build_kakao_map_html(
+            js_key=js_key,
+            lat=resolved_lat,
+            lng=resolved_lng,
+            level=level,
+            map_type=map_type,
+        )
+        components.html(map_html, height=650, scrolling=False)
+    else:
+        st.info("먼저 주소 검색 또는 좌표 입력을 해주세요.")
+
+with col2:
+    st.subheader("2) 위성 이미지 업로드 후 분류")
+    st.markdown(
+        """
+        카카오맵 또는 다른 위성지도에서 **대상 위치의 상세 위성 이미지**를 캡처해서 업로드하세요.  
+        자동 캡처 기능은 배포 안정성을 위해 제외했습니다.
+        """
+    )
+
+    uploaded = st.file_uploader(
+        "이미지 업로드",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=False,
+    )
+
+    if uploaded is not None:
+        pil_img = Image.open(uploaded).convert("RGB")
+        st.image(pil_img, caption="업로드한 분석 이미지", use_container_width=True)
+
+        classify_btn = st.button("분류 실행", type="primary", use_container_width=True)
+        if classify_btn:
+            try:
+                with st.spinner("모델 로딩 및 분류 중..."):
+                    model, preprocess, tokenizer, device = load_clip_model()
+                    artifacts = load_artifacts()
+                    result = classify_image(
+                        pil_img=pil_img,
+                        mode=mode,
+                        model=model,
+                        preprocess=preprocess,
+                        tokenizer=tokenizer,
+                        device=device,
+                        artifacts=artifacts,
+                    )
+
+                prob = result["probability"]
+                label = result["label"]
+                score = result["score"]
+
+                if label == "데이터센터":
+                    st.success(f"판정: **{label}**")
+                else:
+                    st.info(f"판정: **{label}**")
+
+                st.metric("데이터센터 확률", f"{prob * 100:.2f}%")
+                st.write(f"점수(score): `{score:.6f}`")
+                st.write(f"모드: `{result['mode']}`")
+
+                if result.get("details"):
+                    with st.expander("세부 점수", expanded=False):
+                        st.json(result["details"], expanded=True)
+
+            except Exception as e:
+                st.error(f"분류 중 오류: {e}")
+    else:
+        st.caption("이미지를 업로드하면 분류 버튼이 활성화됩니다.")
+
+st.markdown("---")
+st.subheader("3) 배포 전 체크리스트")
+st.markdown(
+    """
+    - `packages.txt`는 제거
+    - `requirements.txt`에는 `playwright` 제외
+    - Streamlit Cloud의 **Secrets**에 아래 값 설정
+      - `KAKAO_JS_KEY`
+      - `KAKAO_REST_KEY`
+    - `artifacts/linearprobe.joblib` 또는 `artifacts/centroids.npz`가 있으면 더 안정적인 분류 가능
+    """
+)
