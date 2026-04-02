@@ -15,9 +15,6 @@ import streamlit.components.v1 as components
 import torch
 from PIL import Image
 
-try:
-except Exception:
-    sync_playwright = None
 
 st.set_page_config(page_title="KakaoMap Data Center Classifier", layout="wide")
 
@@ -155,65 +152,6 @@ def render_map_component(js_key: str, lat: float, lng: float, level: int, height
 
 
 
-def ensure_playwright_browser() -> Tuple[bool, str]:
-    if sync_playwright is None:
-        return False, "playwright 패키지가 로드되지 않았습니다."
-
-    browser_hint = Path.home() / ".cache" / "ms-playwright"
-    if browser_hint.exists() and any(browser_hint.iterdir()):
-        return True, ""
-
-    try:
-        subprocess.run(
-            ["python", "-m", "playwright", "install", "chromium"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        return True, ""
-    except Exception as exc:
-        return False, f"Chromium 설치 실패: {exc}"
-
-
-@st.cache_data(show_spinner=False)
-def capture_kakao_map(
-    js_key: str,
-    lat: float,
-    lng: float,
-    level: int = 2,
-    width: int = 1280,
-    height: int = 960,
-    map_type: str = "SKYVIEW",
-) -> bytes:
-    ok, message = ensure_playwright_browser()
-    if not ok:
-        raise RuntimeError(message)
-
-    html = build_kakao_map_html(
-        js_key=js_key,
-        lat=lat,
-        lng=lng,
-        level=level,
-        width=width,
-        height=height,
-        map_type=map_type,
-        marker=False,
-    )
-
-    with tempfile.TemporaryDirectory() as td:
-        html_path = Path(td) / "map.html"
-        png_path = Path(td) / "map.png"
-        html_path.write_text(html, encoding="utf-8")
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": width, "height": height})
-            page.goto(html_path.as_uri(), wait_until="networkidle")
-            page.wait_for_timeout(2500)
-            page.locator("#map").screenshot(path=str(png_path))
-            browser.close()
-        return png_path.read_bytes()
 
 
 @st.cache_resource(show_spinner=False)
