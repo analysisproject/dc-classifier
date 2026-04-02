@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
@@ -10,18 +11,19 @@ import streamlit as st
 import streamlit.components.v1 as components
 import torch
 from PIL import Image
+from playwright.sync_api import sync_playwright
 
 # ============================================================
 # Page config
 # ============================================================
 st.set_page_config(
-    page_title="Kakao Satellite Data Center Classifier",
+    page_title="Kakao Satellite DC Classifier",
     page_icon="🛰️",
     layout="wide",
 )
 
 # ============================================================
-# Constants
+# Paths / constants
 # ============================================================
 ARTIFACT_DIR = Path("artifacts")
 LINEARPROBE_PATH = ARTIFACT_DIR / "linearprobe.joblib"
@@ -47,20 +49,19 @@ NEG_PROMPTS = [
 ]
 
 # ============================================================
-# Secret / env helpers
+# Secrets / env helpers
 # ============================================================
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
         if key in st.secrets:
-            value = st.secrets[key]
-            if value is not None and str(value).strip():
-                return str(value).strip()
+            v = st.secrets[key]
+            if v is not None and str(v).strip():
+                return str(v).strip()
     except Exception:
         pass
-
-    value = os.getenv(key, default)
-    if value is not None and str(value).strip():
-        return str(value).strip()
+    v = os.getenv(key, default)
+    if v is not None and str(v).strip():
+        return str(v).strip()
     return None
 
 
@@ -70,9 +71,7 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
 @st.cache_resource(show_spinner=True)
 def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFAULT_PRETRAINED):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        model_name, pretrained=pretrained
-    )
+    model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
     tokenizer = open_clip.get_tokenizer(model_name)
     model = model.to(device)
     model.eval()
@@ -98,15 +97,12 @@ def encode_texts(model, tokenizer, texts, device: str) -> np.ndarray:
 @st.cache_resource(show_spinner=False)
 def load_artifacts() -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
-
     if LINEARPROBE_PATH.exists():
         artifacts["linearprobe"] = joblib.load(LINEARPROBE_PATH)
-
     if CENTROIDS_PATH.exists():
         data = np.load(CENTROIDS_PATH)
         artifacts["pos_centroid"] = data["pos_centroid"]
         artifacts["neg_centroid"] = data["neg_centroid"]
-
     return artifacts
 
 
@@ -114,7 +110,7 @@ def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def classify_image(
+def classify_pil_image(
     pil_img: Image.Image,
     mode: str,
     model,
@@ -146,10 +142,8 @@ def classify_image(
     if mode == "centroid":
         if "pos_centroid" not in artifacts or "neg_centroid" not in artifacts:
             raise RuntimeError("artifacts/centroids.npz 파일이 없습니다.")
-
         pos_cent = artifacts["pos_centroid"]
         neg_cent = artifacts["neg_centroid"]
-
         pos_cent = pos_cent / (np.linalg.norm(pos_cent) + 1e-9)
         neg_cent = neg_cent / (np.linalg.norm(neg_cent) + 1e-9)
 
@@ -161,10 +155,7 @@ def classify_image(
         result["score"] = score
         result["probability"] = prob
         result["label"] = "데이터센터" if score > 0 else "비데이터센터"
-        result["details"] = {
-            "sim_pos": sim_pos,
-            "sim_neg": sim_neg,
-        }
+        result["details"] = {"sim_pos": sim_pos, "sim_neg": sim_neg}
         return result
 
     text_emb_pos = encode_texts(model, tokenizer, POS_PROMPTS, device)
@@ -172,7 +163,6 @@ def classify_image(
 
     sim_pos = img_emb @ text_emb_pos.T
     sim_neg = img_emb @ text_emb_neg.T
-
     pos_max = float(sim_pos.max())
     neg_max = float(sim_neg.max())
     score = pos_max - neg_max
@@ -189,14 +179,12 @@ def classify_image(
 
 
 # ============================================================
-# Kakao Local REST helpers
+# Kakao Local REST API
 # ============================================================
 def get_auth_headers(rest_key: str) -> Dict[str, str]:
     if not rest_key or not rest_key.strip():
-        raise ValueError("REST API 키가 비어 있습니다.")
-    return {
-        "Authorization": f"KakaoAK {rest_key.strip()}",
-    }
+        raise ValueError("REST API Key가 비어 있습니다.")
+    return {"Authorization": f"KakaoAK {rest_key.strip()}"}
 
 
 def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, dict]]:
@@ -207,14 +195,12 @@ def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, d
 
     if r.status_code == 403:
         raise RuntimeError(
-            "주소 검색이 403으로 거부되었습니다. REST API Key가 맞는지, "
-            "JavaScript Key를 잘못 넣지 않았는지 확인하세요."
+            "주소 검색이 403으로 거부되었습니다. REST API Key가 맞는지 확인하세요."
         )
-
     r.raise_for_status()
+
     data = r.json()
     docs = data.get("documents", [])
-
     if not docs:
         return None
 
@@ -222,38 +208,6 @@ def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, d
     lng = float(doc["x"])
     lat = float(doc["y"])
     return lat, lng, doc
-
-
-def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
-    url = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
-    headers = get_auth_headers(rest_key)
-    params = {"x": lng, "y": lat}
-    r = requests.get(url, headers=headers, params=params, timeout=20)
-
-    if r.status_code == 403:
-        raise RuntimeError(
-            "GPS 주소 변환이 403으로 거부되었습니다. REST API Key가 맞는지, "
-            "JavaScript Key를 잘못 넣지 않았는지 확인하세요."
-        )
-
-    r.raise_for_status()
-    data = r.json()
-    docs = data.get("documents", [])
-    return docs[0] if docs else None
-
-
-def format_address_from_reverse_result(doc: Optional[dict]) -> str:
-    if not doc:
-        return "주소를 찾지 못했습니다."
-
-    road = doc.get("road_address")
-    addr = doc.get("address")
-
-    if road and road.get("address_name"):
-        return road["address_name"]
-    if addr and addr.get("address_name"):
-        return addr["address_name"]
-    return "주소를 찾지 못했습니다."
 
 
 # ============================================================
@@ -265,16 +219,15 @@ def build_kakao_map_html(
     lng: float,
     level: int = 3,
     map_type: str = "SKYVIEW",
+    width: int = 1200,
+    height: int = 900,
 ) -> str:
     if not js_key or not js_key.strip():
         raise ValueError("JavaScript Key가 비어 있습니다.")
 
-    # SKYVIEW = 위성사진
-    # HYBRID = 위성사진 + 라벨
+    map_type_js = "kakao.maps.MapTypeId.SKYVIEW"
     if map_type.upper() == "HYBRID":
         map_type_js = "kakao.maps.MapTypeId.HYBRID"
-    else:
-        map_type_js = "kakao.maps.MapTypeId.SKYVIEW"
 
     return f"""
     <!DOCTYPE html>
@@ -285,13 +238,14 @@ def build_kakao_map_html(
             html, body {{
                 margin: 0;
                 padding: 0;
-                width: 100%;
-                height: 100%;
+                width: {width}px;
+                height: {height}px;
+                overflow: hidden;
                 background: #000;
             }}
             #map {{
-                width: 100%;
-                height: 100vh;
+                width: {width}px;
+                height: {height}px;
             }}
         </style>
         <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={js_key}"></script>
@@ -305,8 +259,6 @@ def build_kakao_map_html(
                 level: {level}
             }};
             var map = new kakao.maps.Map(container, options);
-
-            // 반드시 위성사진으로 설정
             map.setMapTypeId({map_type_js});
 
             var markerPosition = new kakao.maps.LatLng({lat}, {lng});
@@ -315,7 +267,7 @@ def build_kakao_map_html(
             }});
             marker.setMap(map);
 
-            var iwContent = '<div style="padding:6px 10px;font-size:12px;">분석 대상 위치</div>';
+            var iwContent = '<div style="padding:6px 10px;font-size:12px;">분석 위치</div>';
             var infowindow = new kakao.maps.InfoWindow({{
                 content: iwContent
             }});
@@ -326,252 +278,213 @@ def build_kakao_map_html(
     """
 
 
-# ============================================================
-# Initialize session state
-# ============================================================
-default_state = {
-    "lat": None,
-    "lng": None,
-    "resolved_text": None,
-    "resolved_meta": None,
-    "resolved_address_str": None,
-}
-for k, v in default_state.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+def capture_kakao_satellite(
+    js_key: str,
+    lat: float,
+    lng: float,
+    level: int = 3,
+    map_type: str = "SKYVIEW",
+    width: int = 1200,
+    height: int = 900,
+) -> Image.Image:
+    html = build_kakao_map_html(
+        js_key=js_key,
+        lat=lat,
+        lng=lng,
+        level=level,
+        map_type=map_type,
+        width=width,
+        height=height,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        html_path = Path(tmpdir) / "map.html"
+        png_path = Path(tmpdir) / "map.png"
+        html_path.write_text(html, encoding="utf-8")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": width, "height": height})
+            page.goto(f"file://{html_path.resolve()}", wait_until="networkidle")
+            page.wait_for_timeout(3500)
+            page.screenshot(path=str(png_path), full_page=False)
+            browser.close()
+
+        img = Image.open(png_path).convert("RGB")
+        return img
 
 
 # ============================================================
 # UI
 # ============================================================
 st.title("🛰️ Kakao Satellite Data Center Classifier")
-st.caption("GPS 좌표 또는 주소를 입력해 위성사진 지도를 띄우고, 위성 이미지 업로드로 데이터센터 여부를 분류합니다.")
-
-# Sidebar
-st.sidebar.header("설정")
+st.caption("주소 또는 GPS 중 하나를 입력하면 카카오 위성사진을 자동 캡처하고 데이터센터 여부를 바로 분류합니다.")
 
 default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
 default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
 
-mode = st.sidebar.selectbox(
-    "분류 모드",
-    ["zeroshot", "centroid", "linearprobe"],
-    index=0,
-)
+with st.sidebar:
+    st.header("설정")
+    js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
+    rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
 
-# 기본값을 SKYVIEW로 고정
-map_type = st.sidebar.selectbox(
-    "지도 타입",
-    ["SKYVIEW", "HYBRID"],
-    index=0,
-    help="SKYVIEW = 순수 위성사진, HYBRID = 위성사진 + 라벨",
-)
-
-level = st.sidebar.slider(
-    "지도 확대 수준(level)",
-    min_value=1,
-    max_value=8,
-    value=3,
-    help="숫자가 작을수록 더 확대됩니다.",
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Kakao API Key")
-js_key = st.sidebar.text_input("JavaScript Key", value=default_js_key, type="password")
-rest_key = st.sidebar.text_input("REST API Key", value=default_rest_key, type="password")
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("모델 파일 상태")
-st.sidebar.write(f"- linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
-st.sidebar.write(f"- centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
-
-left, right = st.columns([1.25, 0.75], gap="large")
-
-with left:
-    st.subheader("1) GPS 좌표로 바로 위성지도 보기")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        lat_str = st.text_input(
-            "위도 (Latitude)",
-            value="" if st.session_state["lat"] is None else str(st.session_state["lat"]),
-            placeholder="예: 36.504073",
-        )
-    with c2:
-        lng_str = st.text_input(
-            "경도 (Longitude)",
-            value="" if st.session_state["lng"] is None else str(st.session_state["lng"]),
-            placeholder="예: 127.249485",
-        )
-
-    g1, g2 = st.columns(2)
-
-    with g1:
-        if st.button("GPS로 위성지도 보기", use_container_width=True):
-            try:
-                lat = float(lat_str)
-                lng = float(lng_str)
-
-                st.session_state["lat"] = lat
-                st.session_state["lng"] = lng
-                st.session_state["resolved_text"] = "GPS 좌표 입력"
-                st.session_state["resolved_meta"] = None
-                st.session_state["resolved_address_str"] = None
-
-                st.success("GPS 좌표로 위성사진 지도를 표시합니다.")
-            except Exception as e:
-                st.error(f"GPS 좌표 처리 오류: {e}")
-
-    with g2:
-        if st.button("GPS → 주소 변환", use_container_width=True):
-            if not rest_key:
-                st.error("REST API Key를 먼저 입력하세요.")
-            else:
-                try:
-                    lat = float(lat_str)
-                    lng = float(lng_str)
-                    meta = reverse_geocode(rest_key, lat, lng)
-
-                    st.session_state["lat"] = lat
-                    st.session_state["lng"] = lng
-                    st.session_state["resolved_text"] = "GPS 좌표 입력"
-                    st.session_state["resolved_meta"] = meta
-                    st.session_state["resolved_address_str"] = format_address_from_reverse_result(meta)
-
-                    st.success("GPS 좌표를 주소로 변환했습니다.")
-                except Exception as e:
-                    st.error(f"GPS 주소 변환 오류: {e}")
-
-    st.markdown("---")
-    st.subheader("2) 주소로 좌표 검색")
-
-    address_query = st.text_input(
-        "주소 입력",
-        placeholder="예: 세종특별자치시 도움6로 11 또는 824 Haengbok-daero",
+    input_mode = st.radio("입력 방식", ["주소 입력", "GPS 입력"], index=0)
+    mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
+    map_type = st.selectbox(
+        "지도 타입",
+        ["SKYVIEW", "HYBRID"],
+        index=0,
+        help="SKYVIEW = 순수 위성사진, HYBRID = 위성사진 + 라벨",
     )
+    level = st.slider("확대 수준(level)", min_value=1, max_value=8, value=3)
+    st.markdown("---")
+    st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
+    st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
 
-    if st.button("주소 → 좌표 검색", use_container_width=True):
-        if not rest_key:
-            st.error("REST API Key를 먼저 입력하세요.")
-        elif not address_query.strip():
-            st.warning("주소를 입력하세요.")
-        else:
+col_left, col_right = st.columns([1.2, 0.8], gap="large")
+
+lat = None
+lng = None
+meta = None
+resolved_text = None
+
+with col_left:
+    st.subheader("1) 위치 입력")
+
+    if input_mode == "주소 입력":
+        address = st.text_input(
+            "주소",
+            placeholder="예: 세종특별자치시 도움6로 11 또는 824 Haengbok-daero"
+        )
+        if st.button("위성사진 불러오기 및 분석", type="primary", use_container_width=True):
+            if not rest_key:
+                st.error("주소 입력 모드에서는 REST API Key가 필요합니다.")
+                st.stop()
+            if not address.strip():
+                st.warning("주소를 입력하세요.")
+                st.stop()
+
             try:
-                result = geocode_address(rest_key, address_query.strip())
-
-                if result is None:
-                    st.warning("검색 결과가 없습니다.")
-                else:
-                    lat, lng, meta = result
-                    st.session_state["lat"] = lat
-                    st.session_state["lng"] = lng
-                    st.session_state["resolved_text"] = address_query.strip()
-                    st.session_state["resolved_meta"] = meta
-                    st.session_state["resolved_address_str"] = meta.get("address_name", address_query.strip())
-
-                    st.success("주소를 좌표로 변환했습니다.")
+                geo = geocode_address(rest_key, address.strip())
+                if geo is None:
+                    st.warning("주소 검색 결과가 없습니다.")
+                    st.stop()
+                lat, lng, meta = geo
+                resolved_text = address.strip()
             except Exception as e:
                 st.error(f"주소 검색 오류: {e}")
+                st.stop()
 
-    st.markdown("---")
-    st.subheader("3) 현재 선택된 위치")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            lat_text = st.text_input("위도 (Latitude)", placeholder="예: 36.504073")
+        with c2:
+            lng_text = st.text_input("경도 (Longitude)", placeholder="예: 127.249485")
 
-    if st.session_state["lat"] is not None and st.session_state["lng"] is not None:
-        st.write(f"**위도 / 경도**: {st.session_state['lat']:.6f}, {st.session_state['lng']:.6f}")
+        if st.button("위성사진 불러오기 및 분석", type="primary", use_container_width=True):
+            try:
+                lat = float(lat_text)
+                lng = float(lng_text)
+                resolved_text = "GPS 좌표 입력"
+            except Exception as e:
+                st.error(f"GPS 좌표 입력 오류: {e}")
+                st.stop()
 
-        if st.session_state["resolved_address_str"]:
-            st.write(f"**주소**: {st.session_state['resolved_address_str']}")
-        else:
-            st.caption("현재는 GPS 좌표만 선택된 상태입니다. 주소가 필요하면 'GPS → 주소 변환'을 누르세요.")
+    if lat is not None and lng is not None:
+        st.success("입력된 위치를 기준으로 분석을 수행합니다.")
+        st.write(f"**위도 / 경도**: {lat:.6f}, {lng:.6f}")
+        if resolved_text:
+            st.write(f"**입력값**: {resolved_text}")
+        if meta:
+            with st.expander("주소 검색 상세 응답", expanded=False):
+                st.json(meta, expanded=False)
 
-        if st.session_state["resolved_meta"] is not None:
-            with st.expander("상세 응답 보기", expanded=False):
-                st.json(st.session_state["resolved_meta"], expanded=False)
+        preview_html = build_kakao_map_html(
+            js_key=js_key,
+            lat=lat,
+            lng=lng,
+            level=level,
+            map_type=map_type,
+            width=1000,
+            height=700,
+        )
+        components.html(preview_html, height=700, scrolling=False)
+
+with col_right:
+    st.subheader("2) 분석 결과")
+
+    if lat is not None and lng is not None:
+        if not js_key:
+            st.error("JavaScript Key가 필요합니다.")
+            st.stop()
 
         try:
-            map_html = build_kakao_map_html(
-                js_key=js_key,
-                lat=st.session_state["lat"],
-                lng=st.session_state["lng"],
-                level=level,
-                map_type=map_type,
-            )
-            components.html(map_html, height=680, scrolling=False)
+            with st.spinner("카카오 위성사진 캡처 중..."):
+                sat_img = capture_kakao_satellite(
+                    js_key=js_key,
+                    lat=lat,
+                    lng=lng,
+                    level=level,
+                    map_type=map_type,
+                    width=1200,
+                    height=900,
+                )
+
+            st.image(sat_img, caption="자동 캡처된 카카오 위성사진", use_container_width=True)
+
+            with st.spinner("데이터센터 분류 중..."):
+                model, preprocess, tokenizer, device = load_clip_model()
+                artifacts = load_artifacts()
+                result = classify_pil_image(
+                    pil_img=sat_img,
+                    mode=mode,
+                    model=model,
+                    preprocess=preprocess,
+                    tokenizer=tokenizer,
+                    device=device,
+                    artifacts=artifacts,
+                )
+
+            prob = float(result["probability"])
+            score = float(result["score"])
+            label = result["label"]
+
+            if label == "데이터센터":
+                st.success(f"판정: **{label}**")
+            else:
+                st.info(f"판정: **{label}**")
+
+            st.metric("데이터센터 확률", f"{prob * 100:.2f}%")
+            st.write(f"점수(score): `{score:.6f}`")
+            st.write(f"분류 모드: `{result['mode']}`")
+
+            if result.get("details"):
+                with st.expander("세부 점수", expanded=False):
+                    st.json(result["details"], expanded=True)
+
         except Exception as e:
-            st.error(f"지도 표시 오류: {e}")
+            st.error(f"분석 중 오류: {e}")
     else:
-        st.info("GPS 좌표를 넣거나 주소를 입력해 위치를 먼저 선택하세요.")
-
-with right:
-    st.subheader("4) 위성 이미지 업로드 후 분류")
-    st.write("카카오 위성지도 또는 다른 위성지도에서 캡처한 이미지를 업로드하면 데이터센터 여부와 확률을 보여줍니다.")
-
-    uploaded = st.file_uploader(
-        "이미지 업로드",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=False,
-    )
-
-    if uploaded is not None:
-        pil_img = Image.open(uploaded).convert("RGB")
-        st.image(pil_img, caption="업로드한 분석 이미지", use_container_width=True)
-
-        if st.button("분류 실행", type="primary", use_container_width=True):
-            try:
-                with st.spinner("분류 중..."):
-                    model, preprocess, tokenizer, device = load_clip_model()
-                    artifacts = load_artifacts()
-                    result = classify_image(
-                        pil_img=pil_img,
-                        mode=mode,
-                        model=model,
-                        preprocess=preprocess,
-                        tokenizer=tokenizer,
-                        device=device,
-                        artifacts=artifacts,
-                    )
-
-                prob = result["probability"]
-                label = result["label"]
-                score = result["score"]
-
-                if label == "데이터센터":
-                    st.success(f"판정: **{label}**")
-                else:
-                    st.info(f"판정: **{label}**")
-
-                st.metric("데이터센터 확률", f"{prob * 100:.2f}%")
-                st.write(f"점수(score): `{score:.6f}`")
-                st.write(f"모드: `{result['mode']}`")
-
-                if result.get("details"):
-                    with st.expander("세부 점수", expanded=False):
-                        st.json(result["details"], expanded=True)
-
-            except Exception as e:
-                st.error(f"분류 오류: {e}")
-    else:
-        st.caption("먼저 위성 이미지를 업로드하세요.")
+        st.info("왼쪽에서 주소 또는 GPS 중 하나를 입력한 뒤 분석 버튼을 누르세요.")
 
 st.markdown("---")
 st.markdown(
     """
-    **사용 방법**
+    **동작 방식**
     
-    1. GPS 좌표를 바로 넣고 **GPS로 위성지도 보기**를 누르면 REST API 없이도 위성사진 지도가 표시됩니다.  
-    2. 주소를 알고 싶을 때만 **GPS → 주소 변환**을 누르세요. 이 단계에서만 REST API Key가 필요합니다.  
-    3. 주소를 직접 넣고 찾고 싶으면 **주소 → 좌표 검색**을 사용하세요.  
-    4. 분류는 지도 화면 자체를 자동 캡처하지 않으므로, 위성사진을 캡처해서 업로드해야 합니다.
+    - **주소 입력**: REST API로 주소를 좌표로 변환한 뒤 분석합니다. Local API는 `Authorization: KakaoAK {REST_API_KEY}` 헤더를 요구합니다. :contentReference[oaicite:1]{index=1}
+    - **GPS 입력**: 좌표를 바로 사용해 위성지도를 띄우고 분석합니다.
+    - **지도 타입**: `SKYVIEW`는 순수 위성사진, `HYBRID`는 위성사진+라벨입니다.
+    - **분류**: 자동 캡처된 위성사진을 CLIP 기반 분류기로 분석합니다.
     """
 )
 
 st.markdown(
     """
-    **403 오류가 계속 뜰 때**
+    **중요**
     
-    - `REST API Key` 칸에 반드시 **REST API 키**를 넣었는지 확인
-    - `JavaScript Key`를 `REST API Key` 칸에 잘못 넣지 않았는지 확인
-    - GPS로 지도만 보는 기능은 REST API 없이 동작해야 정상
-    - 주소 검색 / GPS 주소 변환에서만 403이 뜬다면 REST API 설정 문제로 좁혀집니다
+    이 버전은 Playwright가 필요하므로, Streamlit Community Cloud에서는 설치/실행이 막힐 수 있습니다.  
+    로컬 환경이나 Render/Railway 같은 환경에서 실행하는 쪽이 더 안정적입니다.
     """
 )
