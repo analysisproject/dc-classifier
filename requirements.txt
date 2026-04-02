@@ -7,3 +7,4 @@ torch
 open-clip-torch
 scikit-learn
 pandas
+playwright
