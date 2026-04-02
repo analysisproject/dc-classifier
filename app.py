@@ -1,7 +1,6 @@
 import os
 import threading
 import tempfile
-from io import BytesIO
 from pathlib import Path
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
@@ -35,6 +34,9 @@ CENTROIDS_PATH = ARTIFACT_DIR / "centroids.npz"
 
 DEFAULT_MODEL_NAME = "ViT-B-32"
 DEFAULT_PRETRAINED = "openai"
+
+DEFAULT_LAT = 36.508393
+DEFAULT_LNG = 127.340573
 
 POS_PROMPTS = [
     "a satellite image of a data center",
@@ -130,7 +132,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         kakao.maps.event.addListener(map, "tilesloaded", markReadyOnce);
         kakao.maps.event.addListener(map, "idle", markReadyOnce);
-
         setTimeout(markReadyOnce, 5000);
 
       } catch (e) {
@@ -143,7 +144,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 """
 
 # ============================================================
-# Secret / env helpers
+# Helpers
 # ============================================================
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
@@ -240,7 +241,7 @@ def classify_pil_image(
             "decision_threshold": 0.5,
         }
         result["reason_text"] = (
-            f"Linear probe가 데이터센터일 확률을 {proba:.4f}로 추정했습니다. "
+            f"Linear probe가 데이터센터 확률을 {proba:.4f}로 추정했습니다. "
             f"기준값 0.5 {'이상' if proba >= 0.5 else '미만'}이므로 "
             f"{'데이터센터' if proba >= 0.5 else '비데이터센터'}로 판정했습니다."
         )
@@ -270,8 +271,9 @@ def classify_pil_image(
             "margin": score,
         }
         result["reason_text"] = (
-            f"positive centroid 유사도={sim_pos:.4f}, negative centroid 유사도={sim_neg:.4f}입니다. "
-            f"margin={score:.4f} 이므로 {'데이터센터' if score > 0 else '비데이터센터'}로 판정했습니다."
+            f"positive centroid 유사도={sim_pos:.4f}, "
+            f"negative centroid 유사도={sim_neg:.4f}, "
+            f"margin={score:.4f} 입니다."
         )
         return result
 
@@ -300,9 +302,9 @@ def classify_pil_image(
         "margin": score,
     }
     result["reason_text"] = (
-        f"가장 강한 positive prompt는 '{POS_PROMPTS[pos_idx]}' (유사도 {pos_max:.4f}), "
-        f"가장 강한 negative prompt는 '{NEG_PROMPTS[neg_idx]}' (유사도 {neg_max:.4f})였습니다. "
-        f"margin={score:.4f} 이므로 {'데이터센터' if score > 0 else '비데이터센터'}로 판정했습니다."
+        f"최고 positive prompt='{POS_PROMPTS[pos_idx]}' ({pos_max:.4f}), "
+        f"최고 negative prompt='{NEG_PROMPTS[neg_idx]}' ({neg_max:.4f}), "
+        f"margin={score:.4f} 입니다."
     )
     return result
 
@@ -321,7 +323,7 @@ def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, d
     r = requests.get(url, headers=headers, params=params, timeout=20)
 
     if r.status_code == 403:
-        raise RuntimeError("주소 검색이 403으로 거부되었습니다. REST API Key와 Kakao Local API 설정을 확인하세요.")
+        raise RuntimeError("주소 검색이 403으로 거부되었습니다. REST API Key와 Kakao 설정을 확인하세요.")
     r.raise_for_status()
 
     data = r.json()
@@ -341,7 +343,7 @@ def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
     r = requests.get(url, headers=headers, params=params, timeout=20)
 
     if r.status_code == 403:
-        raise RuntimeError("좌표→주소 변환이 403으로 거부되었습니다. REST API Key와 Kakao Local API 설정을 확인하세요.")
+        raise RuntimeError("좌표→주소 변환이 403으로 거부되었습니다. REST API Key와 Kakao 설정을 확인하세요.")
     r.raise_for_status()
 
     data = r.json()
@@ -360,7 +362,7 @@ def format_reverse_address(doc: Optional[dict]) -> str:
     return "주소를 찾지 못했습니다."
 
 # ============================================================
-# Local HTTP server for Kakao map rendering
+# Local HTTP server for Kakao rendering
 # ============================================================
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -383,7 +385,6 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
     url = f"{base_url}?{params}"
 
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
     page.wait_for_function(
         "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
         timeout=10000
@@ -440,7 +441,6 @@ def capture_kakao_satellite_http(
 
                 context.close()
                 browser.close()
-
         finally:
             httpd.shutdown()
 
@@ -452,13 +452,14 @@ def capture_kakao_satellite_http(
 # ============================================================
 # Session state
 # ============================================================
-for k, v in {
-    "lat": None,
-    "lng": None,
-    "resolved_text": None,
+defaults = {
+    "lat": DEFAULT_LAT,
+    "lng": DEFAULT_LNG,
+    "resolved_text": "GPS 좌표 입력",
     "resolved_meta": None,
     "resolved_address_str": None,
-}.items():
+}
+for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -466,7 +467,7 @@ for k, v in {
 # UI
 # ============================================================
 st.title("🛰️ Kakao Satellite Data Center Classifier")
-st.caption("주소 또는 GPS 중 하나를 입력하면 위성사진을 불러오고 데이터센터 여부를 즉시 분류합니다.")
+st.caption("GPS 또는 주소를 입력하면 위성사진을 불러오고 roof view 기준으로 데이터센터 여부를 판정합니다.")
 
 default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
 default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
@@ -476,74 +477,26 @@ with st.sidebar:
     js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
     rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
 
-    input_mode = st.radio("입력 방식", ["주소 입력", "GPS 입력"], index=0)
+    input_mode = st.radio("입력 방식", ["GPS 입력", "주소 입력"], index=0)
     mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
-
-    map_type = st.selectbox(
-        "지도 타입",
-        ["SKYVIEW", "HYBRID"],
-        index=0,
-        help="SKYVIEW=순수 위성사진, HYBRID=위성+라벨"
-    )
-
-    wide_level = st.slider("wide level", min_value=0, max_value=6, value=2)
-    roof_level = st.slider("roof level", min_value=0, max_value=6, value=1)
+    map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
+    wide_level = st.slider("wide level", 0, 6, 2)
+    roof_level = st.slider("roof level", 0, 6, 1)
 
     st.markdown("---")
     st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
     st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
 
-left, right = st.columns([1.15, 0.85], gap="large")
+col1, col2, col3 = st.columns([0.9, 1.05, 1.05], gap="large")
 
-lat = None
-lng = None
-meta = None
-resolved_text = None
-resolved_address_str = None
-
-with left:
+with col1:
     st.subheader("1) 위치 입력")
 
-    if input_mode == "주소 입력":
-        address = st.text_input("주소", placeholder="예: 세종특별자치시 도움6로 11")
+    if input_mode == "GPS 입력":
+        lat_text = st.text_input("위도 (Latitude)", value=f"{st.session_state['lat']:.6f}")
+        lng_text = st.text_input("경도 (Longitude)", value=f"{st.session_state['lng']:.6f}")
 
-        if st.button("위성사진 불러오기 및 분석", type="primary", use_container_width=True):
-            if not rest_key:
-                st.error("주소 입력 모드에서는 REST API Key가 필요합니다.")
-                st.stop()
-
-            if not address.strip():
-                st.warning("주소를 입력하세요.")
-                st.stop()
-
-            try:
-                geo = geocode_address(rest_key, address.strip())
-                if geo is None:
-                    st.warning("주소 검색 결과가 없습니다.")
-                    st.stop()
-
-                lat, lng, meta = geo
-                resolved_text = address.strip()
-                resolved_address_str = meta.get("address_name", address.strip())
-
-                st.session_state["lat"] = lat
-                st.session_state["lng"] = lng
-                st.session_state["resolved_text"] = resolved_text
-                st.session_state["resolved_meta"] = meta
-                st.session_state["resolved_address_str"] = resolved_address_str
-
-            except Exception as e:
-                st.error(f"주소 검색 오류: {e}")
-                st.stop()
-
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            lat_text = st.text_input("위도 (Latitude)", placeholder="예: 36.508393")
-        with c2:
-            lng_text = st.text_input("경도 (Longitude)", placeholder="예: 127.340573")
-
-        if st.button("위성사진 불러오기 및 분석", type="primary", use_container_width=True):
+        if st.button("위치 확인 및 분석", type="primary", use_container_width=True):
             try:
                 lat = float(lat_text)
                 lng = float(lng_text)
@@ -562,125 +515,118 @@ with left:
 
             except Exception as e:
                 st.error(f"GPS 좌표 입력 오류: {e}")
-                st.stop()
 
-    lat = st.session_state.get("lat")
-    lng = st.session_state.get("lng")
-    meta = st.session_state.get("resolved_meta")
-    resolved_text = st.session_state.get("resolved_text")
-    resolved_address_str = st.session_state.get("resolved_address_str")
+    else:
+        address = st.text_input("주소", placeholder="예: 세종특별자치시 도움6로 11")
+
+        if st.button("위치 확인 및 분석", type="primary", use_container_width=True):
+            if not rest_key:
+                st.error("주소 입력 모드에서는 REST API Key가 필요합니다.")
+            elif not address.strip():
+                st.warning("주소를 입력하세요.")
+            else:
+                try:
+                    geo = geocode_address(rest_key, address.strip())
+                    if geo is None:
+                        st.warning("주소 검색 결과가 없습니다.")
+                    else:
+                        lat, lng, meta = geo
+                        st.session_state["lat"] = lat
+                        st.session_state["lng"] = lng
+                        st.session_state["resolved_text"] = address.strip()
+                        st.session_state["resolved_meta"] = meta
+                        st.session_state["resolved_address_str"] = meta.get("address_name", address.strip())
+                except Exception as e:
+                    st.error(f"주소 검색 오류: {e}")
 
     st.markdown("---")
     st.subheader("2) 현재 선택 위치")
+    st.write(f"**위도 / 경도**: {st.session_state['lat']:.6f}, {st.session_state['lng']:.6f}")
+    if st.session_state.get("resolved_text"):
+        st.write(f"**입력값**: {st.session_state['resolved_text']}")
+    if st.session_state.get("resolved_address_str"):
+        st.write(f"**주소**: {st.session_state['resolved_address_str']}")
+    if st.session_state.get("resolved_meta") is not None:
+        with st.expander("상세 위치 정보", expanded=False):
+            st.json(st.session_state["resolved_meta"], expanded=False)
 
-    if lat is not None and lng is not None:
-        st.write(f"**위도 / 경도**: {lat:.6f}, {lng:.6f}")
-        if resolved_text:
-            st.write(f"**입력값**: {resolved_text}")
-        if resolved_address_str:
-            st.write(f"**주소**: {resolved_address_str}")
-
-        if meta:
-            with st.expander("상세 위치 정보", expanded=False):
-                st.json(meta, expanded=False)
-    else:
-        st.info("주소 또는 GPS를 입력하고 분석 버튼을 누르세요.")
-
-with right:
+with col2:
     st.subheader("3) 분석 결과")
 
-    if lat is not None and lng is not None:
-        if not js_key:
-            st.error("JavaScript Key가 필요합니다.")
-            st.stop()
+    try:
+        with st.spinner("카카오 위성사진 렌더링 중..."):
+            images = capture_kakao_satellite_http(
+                js_key=js_key,
+                lat=st.session_state["lat"],
+                lon=st.session_state["lng"],
+                wide_level=wide_level,
+                roof_level=roof_level,
+                map_type=map_type,
+                width=1600,
+                height=900,
+                host="127.0.0.1",
+                port=8000,
+            )
 
-        try:
-            with st.spinner("카카오 위성사진 렌더링 중..."):
-                images = capture_kakao_satellite_http(
-                    js_key=js_key,
-                    lat=lat,
-                    lon=lng,
-                    wide_level=wide_level,
-                    roof_level=roof_level,
-                    map_type=map_type,
-                    width=1600,
-                    height=900,
-                    host="127.0.0.1",
-                    port=8000,
-                )
+        wide_img = images["wide"]
+        roof_img = images["roof"]
 
-            wide_img = images["wide"]
-            roof_img = images["roof"]
+        st.markdown("**wide view**")
+        st.image(wide_img, use_container_width=True)
 
-            st.markdown("#### wide view")
-            st.image(wide_img, use_container_width=True)
+        model, preprocess, tokenizer, device = load_clip_model()
+        artifacts = load_artifacts()
 
-            st.markdown("#### roof view")
-            st.image(roof_img, use_container_width=True)
+        roof_result = classify_pil_image(
+            pil_img=roof_img,
+            mode=mode,
+            model=model,
+            preprocess=preprocess,
+            tokenizer=tokenizer,
+            device=device,
+            artifacts=artifacts,
+        )
 
-            with st.spinner("모델 분석 중..."):
-                model, preprocess, tokenizer, device = load_clip_model()
-                artifacts = load_artifacts()
+        st.markdown("**roof 분석 근거 요약**")
+        st.write(roof_result["reason_text"])
 
-                # roof를 기본 분석 이미지로, wide는 보조 판단용으로 활용
-                roof_result = classify_pil_image(
-                    pil_img=roof_img,
-                    mode=mode,
-                    model=model,
-                    preprocess=preprocess,
-                    tokenizer=tokenizer,
-                    device=device,
-                    artifacts=artifacts,
-                )
+        with st.expander("roof 세부 점수", expanded=True):
+            st.json(roof_result["details"], expanded=True)
 
-                wide_result = classify_pil_image(
-                    pil_img=wide_img,
-                    mode=mode,
-                    model=model,
-                    preprocess=preprocess,
-                    tokenizer=tokenizer,
-                    device=device,
-                    artifacts=artifacts,
-                )
+    except Exception as e:
+        st.error(f"분석 중 오류: {e}")
 
-            final_prob = (float(roof_result["probability"]) * 0.65) + (float(wide_result["probability"]) * 0.35)
-            final_label = "데이터센터" if final_prob >= 0.5 else "비데이터센터"
+with col3:
+    st.subheader("4) roof view")
 
-            st.markdown("### 4) 최종 판정")
+    try:
+        if "images" in locals():
+            st.image(images["roof"], use_container_width=True, caption="roof view")
+    except Exception:
+        pass
+
+    st.markdown("---")
+    st.subheader("5) 최종 판정")
+
+    try:
+        if "roof_result" in locals():
+            final_prob = float(roof_result["probability"])
+            final_label = roof_result["label"]
+
             if final_label == "데이터센터":
                 st.success(f"판정: **{final_label}**")
             else:
                 st.info(f"판정: **{final_label}**")
 
-            st.metric("최종 데이터센터 확률", f"{final_prob * 100:.2f}%")
+            st.metric("roof 기준 데이터센터 확률", f"{final_prob * 100:.2f}%")
+            st.write(f"**점수(score)**: `{roof_result['score']:.6f}`")
+            st.write(f"**분류 모드**: `{roof_result['mode']}`")
 
-            st.markdown("### 5) 분류 근거")
-            st.write("**Roof view 근거**")
-            st.write(roof_result["reason_text"])
-            with st.expander("Roof view 세부 점수", expanded=False):
-                st.json(roof_result["details"], expanded=True)
-
-            st.write("**Wide view 근거**")
-            st.write(wide_result["reason_text"])
-            with st.expander("Wide view 세부 점수", expanded=False):
-                st.json(wide_result["details"], expanded=True)
-
-            st.markdown("### 6) 해석")
+            st.markdown("**판정 근거**")
             st.write(
-                f"최종 확률은 roof view 65%, wide view 35% 가중 평균으로 계산했습니다. "
-                f"roof={roof_result['probability']:.4f}, wide={wide_result['probability']:.4f}, "
-                f"final={final_prob:.4f}"
+                "최종 판정은 wide/roof 가중평균이 아니라 "
+                "**roof view 단일 결과만** 사용했습니다."
             )
-
-        except Exception as e:
-            st.error(f"분석 중 오류: {e}")
-    else:
-        st.info("왼쪽에서 위치를 입력하면 여기서 위성사진과 판정 결과가 바로 표시됩니다.")
-
-st.markdown("---")
-st.markdown(
-    """
-    현재 버전은 임시 HTTP 서버를 띄워 Kakao 지도를 렌더링한 뒤 캡처합니다.
-    `file://` 방식보다 검은 화면 문제를 훨씬 줄일 수 있습니다.
-    """
-)
+            st.write(roof_result["reason_text"])
+    except Exception as e:
+        st.error(f"최종 판정 표시 오류: {e}")
