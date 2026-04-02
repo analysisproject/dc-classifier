@@ -559,7 +559,7 @@ with col2:
     st.subheader("3) 위성 사진")
 
     try:
-        with st.spinner("카카오 위성사진 렌더링 중..."):
+        with st.spinner("위성사진 렌더링 중..."):
             images = capture_kakao_satellite_http(
                 js_key=js_key,
                 lat=st.session_state["lat"],
@@ -618,22 +618,88 @@ with col3:
 
     st.subheader("4) 최종 판정")
 
-    if roof_result is not None:
+    try:
+        if roof_result is not None:
+            final_prob = float(roof_result["probability"])
+            final_label = roof_result["label"]
+            roof_score = float(roof_result["score"])
 
-        final_prob = float(roof_result["probability"])
-        final_label = roof_result["label"]
-        roof_score = float(roof_result["score"])
+            wide_prob = float(wide_result["probability"]) if wide_result is not None else None
+            wide_score = float(wide_result["score"]) if wide_result is not None else None
+            wide_label = wide_result["label"] if wide_result is not None else None
 
-        if final_label == "데이터센터":
-            st.success(f"판정: **{final_label}**")
+            # -----------------------------
+            # score 표시용 문구 정리
+            # -----------------------------
+            if roof_result["mode"] in ["zeroshot", "centroid"]:
+                roof_score_label = "roof 판정 margin (유사도 차이)"
+                roof_score_display = f"{roof_score:.6f}"
+                roof_score_text = f"margin {roof_score:.4f}"
+            else:
+                roof_score_label = "roof 데이터센터 예측 확률(score)"
+                roof_score_display = f"{roof_score * 100:.2f}%"
+                roof_score_text = f"예측확률(score) {roof_score:.4f}"
+
+            if wide_result is not None:
+                if wide_result["mode"] in ["zeroshot", "centroid"]:
+                    wide_score_text = f"margin {wide_score:.4f}"
+                else:
+                    wide_score_text = f"예측확률(score) {wide_score:.4f}"
+
+            # -----------------------------
+            # 최종 판정 표시
+            # -----------------------------
+            if final_label == "데이터센터":
+                st.success(f"판정: **{final_label}**")
+            else:
+                st.info(f"판정: **{final_label}**")
+
+            st.metric("roof 기준 데이터센터 확률", f"{final_prob * 100:.2f}%")
+            st.write(f"**{roof_score_label}**: `{roof_score_display}`")
+            st.write(f"**분류 모드**: `{roof_result['mode']}`")
+
+            # -----------------------------
+            # 해석
+            # -----------------------------
+            st.markdown("**해석**")
+            if wide_result is not None:
+                st.write(
+                    f"최종 판정은 **roof view 단일 결과**를 기준으로 했습니다. "
+                    f"roof 결과는 **{final_label}** "
+                    f"(확률 {final_prob:.4f}, {roof_score_text})이고, "
+                    f"wide 결과는 **{wide_label}** "
+                    f"(확률 {wide_prob:.4f}, {wide_score_text})입니다. "
+                    f"즉, wide view는 주변 맥락을 보여주는 참고값으로 보고, "
+                    f"건물 형태와 지붕 특성이 더 직접적으로 드러나는 roof view를 최종 판정 기준으로 사용했습니다."
+                )
+            else:
+                st.write(
+                    f"최종 판정은 **roof view 단일 결과**를 기준으로 했습니다. "
+                    f"roof 결과는 **{final_label}** "
+                    f"(확률 {final_prob:.4f}, {roof_score_text})입니다."
+                )
+
+            # -----------------------------
+            # score 계산 설명
+            # -----------------------------
+            with st.expander("score 계산 방식 설명", expanded=False):
+                if roof_result["mode"] == "zeroshot":
+                    st.write(
+                        "zeroshot에서는 score = 가장 높은 positive prompt 유사도 - "
+                        "가장 높은 negative prompt 유사도 입니다."
+                    )
+                elif roof_result["mode"] == "centroid":
+                    st.write(
+                        "centroid에서는 score = positive centroid 유사도 - "
+                        "negative centroid 유사도 입니다."
+                    )
+                else:
+                    st.write(
+                        "linearprobe에서는 score를 predict_proba(데이터센터 확률)와 동일하게 사용했습니다."
+                    )
+
         else:
-            st.info(f"판정: **{final_label}**")
+            st.info("위성 사진이 생성되면 최종 판정이 여기에 표시됩니다.")
 
-        st.metric("roof 기준 데이터센터 확률", f"{final_prob * 100:.2f}%")
-
-        if roof_result["mode"] in ["zeroshot", "centroid"]:
-            st.write(f"**판정 margin (유사도 차이)**: `{roof_score:.6f}`")
-        else:
-            st.write(f"**데이터센터 예측 확률**: `{roof_score*100:.2f}%`")
-
-        st.write(f"**분류 모드**: `{roof_result['mode']}`")
+    except Exception as e:
+        st.error(f"최종 판정 표시 오류: {e}")
