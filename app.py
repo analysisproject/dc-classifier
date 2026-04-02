@@ -308,16 +308,21 @@ def format_reverse_address(doc: Optional[dict]) -> str:
 # 공식 Web API 문서에는 StaticMap 생성 예제가 있습니다.
 # 여기서는 화면 표시에 그 방식을 사용합니다.
 # ============================================================
-def build_kakao_static_map_html(
+def build_kakao_map_html(
     js_key: str,
     lat: float,
     lng: float,
     level: int = 3,
-    width: int = 900,
+    map_type: str = "SKYVIEW",
+    width: int = 920,
     height: int = 620,
 ) -> str:
     if not js_key or not js_key.strip():
         raise ValueError("JavaScript Key가 비어 있습니다.")
+
+    map_type_js = "kakao.maps.MapTypeId.SKYVIEW"
+    if map_type.upper() == "HYBRID":
+        map_type_js = "kakao.maps.MapTypeId.HYBRID"
 
     return f"""
     <!DOCTYPE html>
@@ -332,29 +337,35 @@ def build_kakao_static_map_html(
                 height: {height}px;
                 background: #111;
             }}
-            #staticMap {{
+            #map {{
                 width: {width}px;
                 height: {height}px;
             }}
         </style>
-        <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={js_key}"></script>
+        <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={js_key}"></script>
     </head>
     <body>
-        <div id="staticMap"></div>
+        <div id="map"></div>
         <script>
-            var markerPosition  = new kakao.maps.LatLng({lat}, {lng});
-            var marker = {{
-                position: markerPosition
+            const container = document.getElementById('map');
+            const options = {{
+                center: new kakao.maps.LatLng({lat}, {lng}),
+                level: {level}
             }};
+            const map = new kakao.maps.Map(container, options);
+            map.setMapTypeId({map_type_js});
 
-            var staticMapContainer  = document.getElementById('staticMap'),
-                staticMapOption = {{
-                    center: new kakao.maps.LatLng({lat}, {lng}),
-                    level: {level},
-                    marker: marker
-                }};
+            const markerPosition = new kakao.maps.LatLng({lat}, {lng});
+            const marker = new kakao.maps.Marker({{
+                position: markerPosition
+            }});
+            marker.setMap(map);
 
-            var staticMap = new kakao.maps.StaticMap(staticMapContainer, staticMapOption);
+            const iwContent = '<div style="padding:6px 10px;font-size:12px;">분석 위치</div>';
+            const infowindow = new kakao.maps.InfoWindow({{
+                content: iwContent
+            }});
+            infowindow.open(map, marker);
         </script>
     </body>
     </html>
@@ -390,9 +401,25 @@ def fetch_satellite_image_for_analysis(
     }
 
     r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
 
-    return Image.open(BytesIO(r.content)).convert("RGB")
+    if r.status_code != 200:
+        raise RuntimeError(f"정적 지도 요청 실패: status={r.status_code}")
+
+    content_type = r.headers.get("Content-Type", "")
+    if "image" not in content_type.lower():
+        preview = r.text[:500] if hasattr(r, "text") else str(r.content[:200])
+        raise RuntimeError(
+            "정적 지도 응답이 이미지가 아닙니다. "
+            f"Content-Type={content_type}, response preview={preview}"
+        )
+
+    try:
+        return Image.open(BytesIO(r.content)).convert("RGB")
+    except Exception as e:
+        raise RuntimeError(
+            f"이미지 디코딩 실패: {e}. "
+            f"Content-Type={content_type}, bytes_length={len(r.content)}"
+        )
 
 # ============================================================
 # Session state
@@ -550,11 +577,12 @@ with left:
         st.subheader("3) 표시용 지도")
         st.caption("화면 표시는 Kakao StaticMap 방식으로 구성했습니다.")
         try:
-            map_html = build_kakao_static_map_html(
+            map_html = build_kakao_map_html(
                 js_key=js_key,
                 lat=lat,
                 lng=lng,
                 level=level,
+                map_type=map_type,
                 width=920,
                 height=620,
             )
