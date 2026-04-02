@@ -16,7 +16,6 @@ import torch
 from PIL import Image
 
 try:
-    from playwright.sync_api import sync_playwright
 except Exception:
     sync_playwright = None
 
