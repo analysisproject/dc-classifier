@@ -632,7 +632,12 @@ try:
             st.info(f"판정: **{final_label}**")
 
         st.metric("roof 기준 데이터센터 확률", f"{final_prob * 100:.2f}%")
-        st.write(f"**roof score**: `{roof_score:.6f}`")
+        
+        if roof_result["mode"] in ["zeroshot", "centroid"]:
+            st.write(f"**판정 margin (유사도 차이)**: `{roof_score:.6f}`")
+        else:
+            st.write(f"**데이터센터 예측 확률**: `{roof_score*100:.2f}%`")
+        
         st.write(f"**분류 모드**: `{roof_result['mode']}`")
 
         st.markdown("**해석**")
