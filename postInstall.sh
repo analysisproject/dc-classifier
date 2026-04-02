@@ -1,2 +1,3 @@
 #!/bin/bash
-playwright install --with-deps chromium
+chmod +x postInstall.sh
+playwright install chromium
