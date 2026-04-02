@@ -3,8 +3,7 @@ requests
 pillow
 numpy
 joblib
-scikit-learn
-pandas
 torch
 open-clip-torch
-playwright
+scikit-learn
+pandas
