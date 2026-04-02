@@ -1,4 +1,13 @@
+import subprocess
 import os
+
+def ensure_playwright():
+    cache_path = os.path.expanduser("~/.cache/ms-playwright")
+    if not os.path.exists(cache_path):
+        subprocess.run(["playwright", "install", "chromium"], check=False)
+
+ensure_playwright()
+
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
