@@ -312,7 +312,10 @@ def capture_kakao_satellite(
         html_path.write_text(html, encoding="utf-8")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
             page = browser.new_page(viewport={"width": width, "height": height})
             page.goto(f"file://{html_path.resolve()}", wait_until="networkidle")
             page.wait_for_timeout(3500)
