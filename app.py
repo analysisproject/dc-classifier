@@ -489,6 +489,11 @@ with st.sidebar:
 
 col1, col2, col3 = st.columns([0.9, 1.05, 1.05], gap="large")
 
+roof_result = None
+wide_result = None
+wide_img = None
+roof_img = None
+
 with col1:
     st.subheader("1) 위치 입력")
 
