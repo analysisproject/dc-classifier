@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 # Page config
 # ============================================================
 st.set_page_config(
-    page_title="Kakao Satellite Data Center Classifier",
+    page_title="Satellite Data Center Classifier",
     page_icon="🛰️",
     layout="wide",
 )
@@ -60,7 +60,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>Kakao Skyview Capture</title>
+  <title>Skyview Capture</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     html, body {
@@ -551,7 +551,7 @@ with col1:
             st.json(st.session_state["resolved_meta"], expanded=False)
 
 with col2:
-    st.subheader("3) 분석 결과")
+    st.subheader("3) 위성 사진")
 
     try:
         with st.spinner("카카오 위성사진 렌더링 중..."):
@@ -574,42 +574,46 @@ with col2:
         st.markdown("**wide view**")
         st.image(wide_img, use_container_width=True)
 
-        model, preprocess, tokenizer, device = load_clip_model()
-        artifacts = load_artifacts()
+        st.markdown("**roof view**")
+        st.image(roof_img, use_container_width=True)
 
-        roof_result = classify_pil_image(
-            pil_img=roof_img,
-            mode=mode,
-            model=model,
-            preprocess=preprocess,
-            tokenizer=tokenizer,
-            device=device,
-            artifacts=artifacts,
-        )
+        with st.spinner("모델 분석 중..."):
+            model, preprocess, tokenizer, device = load_clip_model()
+            artifacts = load_artifacts()
 
-        st.markdown("**roof 분석 근거 요약**")
-        st.write(roof_result["reason_text"])
+            roof_result = classify_pil_image(
+                pil_img=roof_img,
+                mode=mode,
+                model=model,
+                preprocess=preprocess,
+                tokenizer=tokenizer,
+                device=device,
+                artifacts=artifacts,
+            )
 
-        with st.expander("roof 세부 점수", expanded=True):
-            st.json(roof_result["details"], expanded=True)
+            wide_result = classify_pil_image(
+                pil_img=wide_img,
+                mode=mode,
+                model=model,
+                preprocess=preprocess,
+                tokenizer=tokenizer,
+                device=device,
+                artifacts=artifacts,
+            )
 
     except Exception as e:
         st.error(f"분석 중 오류: {e}")
+        roof_result = None
+        wide_result = None
+        wide_img = None
+        roof_img = None
+
 
 with col3:
-    st.subheader("4) roof view")
+    st.subheader("4) 최종 판정")
 
     try:
-        if "images" in locals():
-            st.image(images["roof"], use_container_width=True, caption="roof view")
-    except Exception:
-        pass
-
-    st.markdown("---")
-    st.subheader("5) 최종 판정")
-
-    try:
-        if "roof_result" in locals():
+        if roof_result is not None:
             final_prob = float(roof_result["probability"])
             final_label = roof_result["label"]
 
@@ -622,11 +626,32 @@ with col3:
             st.write(f"**점수(score)**: `{roof_result['score']:.6f}`")
             st.write(f"**분류 모드**: `{roof_result['mode']}`")
 
-            st.markdown("**판정 근거**")
+            st.markdown("**해석**")
             st.write(
-                "최종 판정은 wide/roof 가중평균이 아니라 "
-                "**roof view 단일 결과만** 사용했습니다."
+                f"최종 판정은 wide/roof 가중평균이 아니라 **roof view 단일 결과만** 사용했습니다. "
+                f"roof 기준 확률은 {final_prob:.4f}이며, "
+                f"현재 결과는 **{final_label}** 로 해석됩니다."
             )
-            st.write(roof_result["reason_text"])
+        else:
+            st.info("위성 사진이 생성되면 최종 판정이 여기에 표시됩니다.")
     except Exception as e:
         st.error(f"최종 판정 표시 오류: {e}")
+
+    st.markdown("---")
+    st.subheader("5) 분류 근거")
+
+    try:
+        if roof_result is not None:
+            st.write("**Roof view 근거**")
+            st.write(roof_result["reason_text"])
+            with st.expander("Roof view 세부 점수", expanded=True):
+                st.json(roof_result["details"], expanded=True)
+
+            st.write("**Wide view 참고 근거**")
+            st.write(wide_result["reason_text"])
+            with st.expander("Wide view 세부 점수", expanded=False):
+                st.json(wide_result["details"], expanded=True)
+        else:
+            st.info("분류가 완료되면 근거가 여기에 표시됩니다.")
+    except Exception as e:
+        st.error(f"분류 근거 표시 오류: {e}")
