@@ -11,18 +11,12 @@ import streamlit.components.v1 as components
 import torch
 from PIL import Image
 
-# ============================================================
-# Page config
-# ============================================================
 st.set_page_config(
     page_title="KakaoMap Data Center Classifier",
     page_icon="🛰️",
     layout="wide",
 )
 
-# ============================================================
-# Constants
-# ============================================================
 ARTIFACT_DIR = Path("artifacts")
 LINEARPROBE_PATH = ARTIFACT_DIR / "linearprobe.joblib"
 CENTROIDS_PATH = ARTIFACT_DIR / "centroids.npz"
@@ -46,9 +40,6 @@ NEG_PROMPTS = [
     "an aerial view of a commercial building complex",
 ]
 
-# ============================================================
-# Secret helpers
-# ============================================================
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
         if key in st.secrets:
@@ -63,9 +54,6 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
         return str(value).strip()
     return None
 
-# ============================================================
-# Model helpers
-# ============================================================
 @st.cache_resource(show_spinner=True)
 def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFAULT_PRETRAINED):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -177,21 +165,21 @@ def classify_image(
     }
     return result
 
-# ============================================================
-# Kakao Local API helpers
-# ============================================================
 def get_auth_headers(rest_key: str) -> Dict[str, str]:
     if not rest_key or not rest_key.strip():
         raise ValueError("REST API 키가 비어 있습니다.")
-    return {
-        "Authorization": f"KakaoAK {rest_key.strip()}",
-    }
+    return {"Authorization": f"KakaoAK {rest_key.strip()}"}
 
 def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, dict]]:
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = get_auth_headers(rest_key)
     params = {"query": query}
     r = requests.get(url, headers=headers, params=params, timeout=20)
+    if r.status_code == 403:
+        raise RuntimeError(
+            "Kakao Local API 403 Forbidden입니다. "
+            "REST API 키 종류/오입력, 앱 설정, Local API 권한 상태를 확인하세요."
+        )
     r.raise_for_status()
     data = r.json()
 
@@ -209,14 +197,29 @@ def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
     headers = get_auth_headers(rest_key)
     params = {"x": lng, "y": lat}
     r = requests.get(url, headers=headers, params=params, timeout=20)
+    if r.status_code == 403:
+        raise RuntimeError(
+            "Kakao Local API 403 Forbidden입니다. "
+            "REST API 키 종류/오입력, 앱 설정, Local API 권한 상태를 확인하세요."
+        )
     r.raise_for_status()
     data = r.json()
     docs = data.get("documents", [])
     return docs[0] if docs else None
 
-# ============================================================
-# Kakao Map HTML
-# ============================================================
+def format_address_from_reverse_result(doc: Optional[dict]) -> str:
+    if not doc:
+        return "주소를 찾지 못했습니다."
+
+    road = doc.get("road_address")
+    addr = doc.get("address")
+
+    if road and road.get("address_name"):
+        return road["address_name"]
+    if addr and addr.get("address_name"):
+        return addr["address_name"]
+    return "주소를 찾지 못했습니다."
+
 def build_kakao_map_html(js_key: str, lat: float, lng: float, level: int = 3, map_type: str = "HYBRID") -> str:
     if not js_key or not js_key.strip():
         raise ValueError("JavaScript 키가 비어 있습니다.")
@@ -269,115 +272,90 @@ def build_kakao_map_html(js_key: str, lat: float, lng: float, level: int = 3, ma
     </html>
     """
 
-# ============================================================
-# UI
-# ============================================================
 st.title("🛰️ KakaoMap Data Center Classifier")
-st.caption("주소 또는 GPS 좌표를 입력해 위치를 확인하고, 위성 이미지 업로드로 데이터센터 여부를 분류합니다.")
+st.caption("주소 ↔ GPS 좌표 변환, 지도 표시, 위성 이미지 분류")
 
-# session defaults
 for k, v in {
     "lat": None,
     "lng": None,
     "resolved_text": None,
     "resolved_meta": None,
+    "resolved_address_str": None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# Sidebar
 st.sidebar.header("설정")
-
 default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
 default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
 
-input_mode = st.sidebar.radio("위치 입력 방식", ["주소 입력", "GPS 좌표 입력"], index=0)
 mode = st.sidebar.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
 map_type = st.sidebar.selectbox("지도 타입", ["HYBRID", "SKYVIEW"], index=0)
-level = st.sidebar.slider("지도 확대 수준(level)", min_value=1, max_value=8, value=3)
+level = st.sidebar.slider("지도 확대 수준(level)", 1, 8, 3)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Kakao API Key")
 js_key = st.sidebar.text_input("JavaScript Key", value=default_js_key, type="password")
 rest_key = st.sidebar.text_input("REST API Key", value=default_rest_key, type="password")
 
-if js_key:
-    st.sidebar.success("JavaScript Key 입력됨")
-else:
-    st.sidebar.warning("JavaScript Key 필요")
-
-if rest_key:
-    st.sidebar.success("REST API Key 입력됨")
-else:
-    st.sidebar.warning("REST API Key 필요")
-
 st.sidebar.markdown("---")
-st.sidebar.subheader("모델 파일 상태")
-st.sidebar.write(f"- linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
-st.sidebar.write(f"- centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
+st.sidebar.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
+st.sidebar.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
 
 left, right = st.columns([1.2, 0.8], gap="large")
 
 with left:
-    st.subheader("1) 위치 입력")
+    st.subheader("1) 주소로 좌표 찾기")
+    address_query = st.text_input(
+        "주소 입력",
+        placeholder="예: 824 Haengbok-daero 또는 세종특별자치시 도움6로 11"
+    )
+    if st.button("주소 → 좌표 검색", use_container_width=True):
+        if not rest_key:
+            st.error("REST API Key를 먼저 입력하세요.")
+        elif not address_query.strip():
+            st.warning("주소를 입력하세요.")
+        else:
+            try:
+                lat, lng, meta = geocode_address(rest_key, address_query.strip())
+                st.session_state["lat"] = lat
+                st.session_state["lng"] = lng
+                st.session_state["resolved_text"] = address_query.strip()
+                st.session_state["resolved_meta"] = meta
+                st.session_state["resolved_address_str"] = meta.get("address_name", address_query.strip())
+            except Exception as e:
+                st.error(f"주소 검색 오류: {e}")
 
-    if input_mode == "주소 입력":
-        address_query = st.text_input(
-            "주소를 입력하세요",
-            placeholder="예: 서울특별시 중구 세종대로 110"
-        )
+    st.subheader("2) GPS 좌표로 주소 찾기")
+    c1, c2 = st.columns(2)
+    with c1:
+        lat_str = st.text_input("위도 (Latitude)", value="" if st.session_state["lat"] is None else str(st.session_state["lat"]))
+    with c2:
+        lng_str = st.text_input("경도 (Longitude)", value="" if st.session_state["lng"] is None else str(st.session_state["lng"]))
 
-        if st.button("주소 검색", use_container_width=True):
-            if not rest_key:
-                st.error("REST API Key를 먼저 입력하세요.")
-            elif not address_query.strip():
-                st.warning("주소를 입력하세요.")
-            else:
-                try:
-                    result = geocode_address(rest_key, address_query.strip())
-                    if result is None:
-                        st.warning("검색 결과가 없습니다.")
-                    else:
-                        lat, lng, meta = result
-                        st.session_state["lat"] = lat
-                        st.session_state["lng"] = lng
-                        st.session_state["resolved_text"] = address_query.strip()
-                        st.session_state["resolved_meta"] = meta
-                except Exception as e:
-                    st.error(f"주소 검색 오류: {e}")
-
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            lat_str = st.text_input("위도 (Latitude)", value="" if st.session_state["lat"] is None else str(st.session_state["lat"]))
-        with c2:
-            lng_str = st.text_input("경도 (Longitude)", value="" if st.session_state["lng"] is None else str(st.session_state["lng"]))
-
-        if st.button("좌표 확인", use_container_width=True):
+    if st.button("GPS → 주소 확인", use_container_width=True):
+        if not rest_key:
+            st.error("REST API Key를 먼저 입력하세요.")
+        else:
             try:
                 lat = float(lat_str)
                 lng = float(lng_str)
+                meta = reverse_geocode(rest_key, lat, lng)
+
                 st.session_state["lat"] = lat
                 st.session_state["lng"] = lng
                 st.session_state["resolved_text"] = "GPS 좌표 입력"
-
-                if rest_key:
-                    meta = reverse_geocode(rest_key, lat, lng)
-                    st.session_state["resolved_meta"] = meta
-                else:
-                    st.session_state["resolved_meta"] = None
-
+                st.session_state["resolved_meta"] = meta
+                st.session_state["resolved_address_str"] = format_address_from_reverse_result(meta)
             except Exception as e:
-                st.error(f"좌표 처리 오류: {e}")
+                st.error(f"GPS 주소 변환 오류: {e}")
 
-    st.subheader("2) 지도 보기")
+    st.subheader("3) 현재 선택된 위치")
     if st.session_state["lat"] is not None and st.session_state["lng"] is not None:
         st.write(f"**위도 / 경도**: {st.session_state['lat']:.6f}, {st.session_state['lng']:.6f}")
-        if st.session_state["resolved_text"]:
-            st.write(f"**입력 정보**: {st.session_state['resolved_text']}")
-
+        if st.session_state["resolved_address_str"]:
+            st.write(f"**주소**: {st.session_state['resolved_address_str']}")
         if st.session_state["resolved_meta"] is not None:
-            with st.expander("주소/좌표 상세 정보", expanded=False):
+            with st.expander("상세 응답 보기", expanded=False):
                 st.json(st.session_state["resolved_meta"], expanded=False)
 
         try:
@@ -392,12 +370,10 @@ with left:
         except Exception as e:
             st.error(f"지도 표시 오류: {e}")
     else:
-        st.info("주소 또는 GPS 좌표를 입력해 위치를 먼저 선택하세요.")
+        st.info("주소를 입력하거나 GPS 좌표를 입력하세요.")
 
 with right:
-    st.subheader("3) 위성 이미지 업로드 후 분류")
-    st.write("카카오맵 또는 다른 위성지도에서 캡처한 이미지 파일을 올리면 데이터센터 여부를 분류합니다.")
-
+    st.subheader("4) 위성 이미지 업로드 후 분류")
     uploaded = st.file_uploader(
         "이미지 업로드",
         type=["png", "jpg", "jpeg", "webp"],
@@ -442,15 +418,14 @@ with right:
 
             except Exception as e:
                 st.error(f"분류 오류: {e}")
-    else:
-        st.caption("위성 이미지 파일을 업로드하세요.")
 
 st.markdown("---")
 st.markdown(
     """
-    **체크 포인트**
-    - 주소 검색과 역지오코딩은 Kakao Local REST API를 사용하므로 **REST API Key**가 필요합니다.
-    - 지도 렌더링은 Kakao Maps JavaScript API를 사용하므로 **JavaScript Key**가 필요합니다.
-    - JavaScript SDK 사용 시 앱 도메인을 Kakao Developers에 등록해야 지도 표시가 정상 동작합니다.
+    **403이 계속 뜰 때 점검**
+    1. REST API Key 칸에 **REST API 키**가 들어갔는지 확인
+    2. JavaScript 키를 REST 칸에 잘못 넣지 않았는지 확인
+    3. Kakao Developers에서 Local/Map 관련 기능 설정이 활성화되어 있는지 확인
+    4. 지도 자체가 안 뜨면 JavaScript 키의 도메인 등록 상태도 같이 확인
     """
 )
