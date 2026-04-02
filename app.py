@@ -40,7 +40,7 @@ DEFAULT_NEG_PROMPTS = [
 # ============================================================
 def geocode_address(rest_api_key: str, address: str) -> Dict:
     url = "https://dapi.kakao.com/v2/local/search/address.json"
-    headers = {"Authorization": f"KakaoAK {rest_api_key}"}
+    headers = {"Authorization": f"KakaoAK {2462cfd32ba9f050882d01198fdf3c8f}"}
     params = {"query": address}
     r = requests.get(url, headers=headers, params=params, timeout=20)
     r.raise_for_status()
@@ -59,7 +59,7 @@ def geocode_address(rest_api_key: str, address: str) -> Dict:
 
 def coord_to_address(rest_api_key: str, lat: float, lng: float) -> Dict:
     url = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
-    headers = {"Authorization": f"KakaoAK {rest_api_key}"}
+    headers = {"Authorization": f"KakaoAK {2462cfd32ba9f050882d01198fdf3c8f}"}
     params = {"x": lng, "y": lat}
     r = requests.get(url, headers=headers, params=params, timeout=20)
     r.raise_for_status()
@@ -270,8 +270,8 @@ st.caption("주소 또는 GPS 좌표를 넣으면 카카오맵 위성 이미지�
 
 with st.sidebar:
     st.header("설정")
-    kakao_js_key = st.text_input("Kakao JavaScript Key", type="password")
-    kakao_rest_key = st.text_input("Kakao REST API Key", type="password")
+    kakao_js_key = st.text_input("be08d23343801208f920082c12ebd18f", type="password")
+    kakao_rest_key = st.text_input("2462cfd32ba9f050882d01198fdf3c8f", type="password")
 
     st.markdown("---")
     st.subheader("지도 캡처 옵션")
