@@ -18,6 +18,19 @@ import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
+from utils.core import (
+    init_single_session_state,
+    reverse_geocode,
+    format_reverse_address,
+    geocode_address,
+    capture_kakao_satellite_http,
+    load_clip_model,
+    load_artifacts,
+    classify_pil_image,
+    render_shared_sidebar,
+    LINEARPROBE_PATH,
+    CENTROIDS_PATH,
+)
 
 # ============================================================
 # Page config
