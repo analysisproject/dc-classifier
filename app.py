@@ -144,12 +144,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           fired = true;
           setTimeout(() => {
             window.__MAP_READY__ = true;
-          }, 1200);
+          }, 2000);
         }
 
         kakao.maps.event.addListener(map, "tilesloaded", markReadyOnce);
         kakao.maps.event.addListener(map, "idle", markReadyOnce);
-        setTimeout(markReadyOnce, 5000);
+        setTimeout(markReadyOnce, 8000);
 
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
@@ -500,6 +500,11 @@ def render_one(
     page.locator("#map").screenshot(path=str(out_path))
 
 
+def _open_rgb_image(path: Path) -> Image.Image:
+    with Image.open(path) as img:
+        return img.convert("RGB").copy()
+
+
 def capture_kakao_satellite_http(
     js_key: str,
     lat: float,
@@ -511,48 +516,92 @@ def capture_kakao_satellite_http(
     height: int = 900,
     host: str = "127.0.0.1",
     port: int = 0,
+    max_retries: int = 3,
 ) -> Dict[str, Image.Image]:
     if not js_key:
         raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmpdir = Path(tmp)
+    last_error = None
 
-        html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
-        (tmpdir / "index.html").write_text(html, encoding="utf-8")
+    for attempt in range(1, max_retries + 1):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
 
-        httpd = start_server(tmpdir, host, port)
+            html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
+            (tmpdir / "index.html").write_text(html, encoding="utf-8")
 
-        actual_port = httpd.server_address[1]
-        base_url = f"http://{host}:{actual_port}/index.html"
+            httpd = start_server(tmpdir, host, port)
+            actual_port = httpd.server_address[1]
+            base_url = f"http://{host}:{actual_port}/index.html"
 
-        wide_path = tmpdir / f"wide_z{wide_level}.png"
-        roof_path = tmpdir / f"roof_z{roof_level}.png"
+            wide_path = tmpdir / f"wide_z{wide_level}.png"
+            roof_path = tmpdir / f"roof_z{roof_level}.png"
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
+            browser = None
+            context = None
+
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--disable-setuid-sandbox",
+                        ],
+                    )
+
+                    context = browser.new_context(
+                        viewport={"width": width, "height": height},
+                        device_scale_factor=1,
+                    )
+
+                    page = context.new_page()
+
+                    render_one(page, base_url, lat, lon, wide_level, wide_path, map_type)
+                    render_one(page, base_url, lat, lon, roof_level, roof_path, map_type)
+
+                    return {
+                        "wide": _open_rgb_image(wide_path),
+                        "roof": _open_rgb_image(roof_path),
+                    }
+
+            except PlaywrightTimeoutError as e:
+                last_error = RuntimeError(
+                    f"지도 렌더링 시간 초과 (attempt {attempt}/{max_retries}) | "
+                    f"lat={lat}, lon={lon}, wide_level={wide_level}, roof_level={roof_level}, map_type={map_type}"
                 )
-                context = browser.new_context(
-                    viewport={"width": width, "height": height},
-                    device_scale_factor=1,
-                )
-                page = context.new_page()
+                print(f"[TIMEOUT] {e}")
 
-                render_one(page, base_url, lat, lon, wide_level, wide_path, map_type)
-                render_one(page, base_url, lat, lon, roof_level, roof_path, map_type)
+            except Exception as e:
+                last_error = e
+                print(f"[CAPTURE ERROR] {e}")
 
-                context.close()
-                browser.close()
-        finally:
-            httpd.shutdown()
+            finally:
+                try:
+                    if context is not None:
+                        context.close()
+                except Exception:
+                    pass
 
-        return {
-            "wide": Image.open(wide_path).convert("RGB"),
-            "roof": Image.open(roof_path).convert("RGB"),
-        }
+                try:
+                    if browser is not None:
+                        browser.close()
+                except Exception:
+                    pass
+
+                try:
+                    httpd.shutdown()
+                except Exception:
+                    pass
+
+                try:
+                    httpd.server_close()
+                except Exception:
+                    pass
+
+    raise RuntimeError(f"위성사진 캡처 실패: {last_error}")
 
 
 # ============================================================
