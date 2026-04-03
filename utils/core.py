@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from playwright.sync_api import sync_playwright
 
 PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_chromium_ready.flag")
 
@@ -542,25 +543,26 @@ class KakaoMapRenderer:
             """
             ([lat, lon, level, mapType]) => {
                 window.__MAP_ERROR__ = null;
+                window.__MAP_READY__ = false;
                 window.applyMapState(lat, lon, level, mapType);
             }
             """,
             [lat, lon, level, map_type],
         )
-
+    
         self.page.wait_for_function(
-            "() => window.__MAP_READY__ === true",
-            timeout=12000,
+            "() => window.__MAP_READY__ === true || window.__MAP_ERROR__ !== null",
+            timeout=10000,
         )
-
+    
         err = self.page.evaluate("window.__MAP_ERROR__")
         if err:
             raise RuntimeError(f"Kakao map render error: {err}")
-
+    
         box = self.page.locator("#map").bounding_box()
         if box is None:
             raise RuntimeError("지도가 렌더링되지 않았습니다. #map bounding box를 찾지 못했습니다.")
-
+    
         self.page.locator("#map").screenshot(path=str(out_path))
 
     def close(self):
