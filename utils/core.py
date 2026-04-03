@@ -1,40 +1,9 @@
 import os
 import subprocess
-from pathlib import Path
-from playwright.sync_api import sync_playwright
-
-PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_chromium_ready.flag")
-
-def ensure_playwright_browser():
-    if PLAYWRIGHT_READY_FLAG.exists():
-        return
-
-    try:
-        result = subprocess.run(
-            ["python", "-m", "playwright", "install", "chromium"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
-        else:
-            print("[PLAYWRIGHT INSTALL STDOUT]")
-            print(result.stdout)
-            print("[PLAYWRIGHT INSTALL STDERR]")
-            print(result.stderr)
-    except Exception as e:
-        print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
-
-ensure_playwright_browser()
-
-import threading
 import tempfile
-from pathlib import Path
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from functools import partial
-from typing import Optional, Tuple, Dict, Any, List
 from io import BytesIO
+from pathlib import Path
+from typing import Optional, Tuple, Dict, Any, List
 
 import joblib
 import numpy as np
@@ -44,6 +13,7 @@ import requests
 import streamlit as st
 import torch
 from PIL import Image
+from playwright.sync_api import sync_playwright
 
 
 # ============================================================
@@ -108,10 +78,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     window.__MAP_OBJ__ = null;
     window.__READY_TIMER__ = null;
 
-    function markReadyDelayed(ms = 400) {
-      if (window.__READY_TIMER__) {
-        clearTimeout(window.__READY_TIMER__);
-      }
+    function markReadyDelayed(ms = 600) {
+      if (window.__READY_TIMER__) clearTimeout(window.__READY_TIMER__);
       window.__READY_TIMER__ = setTimeout(() => {
         window.__MAP_READY__ = true;
       }, ms);
@@ -119,11 +87,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function applyMapState(lat, lon, level, mapType) {
       try {
-        if (!window.__MAP_OBJ__) {
-          throw new Error("Map object not initialized");
-        }
+        if (!window.__MAP_OBJ__) throw new Error("Map object not initialized");
 
         window.__MAP_READY__ = false;
+        window.__MAP_ERROR__ = null;
 
         const map = window.__MAP_OBJ__;
         const center = new kakao.maps.LatLng(lat, lon);
@@ -139,7 +106,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           map.setMapTypeId(kakao.maps.MapTypeId.ROADMAP);
         }
 
-        markReadyDelayed(400);
+        // 타일 이벤트가 안 잡히더라도 fallback으로 준비 완료 처리
+        markReadyDelayed(1200);
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
       }
@@ -161,14 +129,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         window.__MAP_OBJ__ = map;
 
         kakao.maps.event.addListener(map, "tilesloaded", function () {
-          markReadyDelayed(300);
+          markReadyDelayed(400);
         });
 
         kakao.maps.event.addListener(map, "idle", function () {
-          markReadyDelayed(300);
+          markReadyDelayed(400);
         });
 
-        markReadyDelayed(500);
+        // 초기 로딩 fallback
+        markReadyDelayed(1200);
 
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
@@ -178,6 +147,74 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </body>
 </html>
 """
+
+class KakaoMapRenderer:
+    def __init__(self, js_key: str, width: int = 896, height: int = 576):
+        self.js_key = js_key
+        self.width = width
+        self.height = height
+
+        self.tmpdir_obj = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self.tmpdir_obj.name)
+
+        html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
+        (self.tmpdir / "index.html").write_text(html, encoding="utf-8")
+
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        self.context = self.browser.new_context(
+            viewport={"width": width, "height": height},
+            device_scale_factor=1,
+        )
+        self.page = self.context.new_page()
+        self.page.goto((self.tmpdir / "index.html").as_uri(), wait_until="domcontentloaded", timeout=20000)
+        self.page.wait_for_function(
+            "() => typeof window.kakao !== 'undefined' && typeof window.kakao.maps !== 'undefined' && window.__MAP_OBJ__ !== null",
+            timeout=20000,
+        )
+
+    def render_to_pil(self, lat: float, lon: float, level: int, map_type: str = "SKYVIEW") -> Image.Image:
+        self.page.evaluate(
+            """
+            ([lat, lon, level, mapType]) => {
+                window.applyMapState(lat, lon, level, mapType);
+            }
+            """,
+            [lat, lon, level, map_type],
+        )
+
+        self.page.wait_for_function(
+            "() => window.__MAP_READY__ === true || window.__MAP_ERROR__ !== null",
+            timeout=12000,
+        )
+
+        err = self.page.evaluate("window.__MAP_ERROR__")
+        if err:
+            raise RuntimeError(f"Kakao map render error: {err}")
+
+        png_bytes = self.page.locator("#map").screenshot(type="png")
+        return Image.open(BytesIO(png_bytes)).convert("RGB")
+
+    def close(self):
+        try:
+            self.context.close()
+        except Exception:
+            pass
+        try:
+            self.browser.close()
+        except Exception:
+            pass
+        try:
+            self.playwright.stop()
+        except Exception:
+            pass
+        try:
+            self.tmpdir_obj.cleanup()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -207,7 +244,6 @@ def init_single_session_state() -> None:
         "resolved_meta": None,
         "resolved_address_str": None,
         "run_analysis": False,
-        "single_result_ready": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -593,7 +629,7 @@ class KakaoMapRenderer:
 
 
 @st.cache_resource(show_spinner=False)
-def get_kakao_renderer(js_key: str, width: int = 1024, height: int = 640):
+def get_kakao_renderer(js_key: str, width: int = 896, height: int = 576):
     return KakaoMapRenderer(js_key=js_key, width=width, height=height)
 
 
@@ -609,46 +645,19 @@ def capture_kakao_satellite_http(
     wide_level: int = 2,
     roof_level: int = 1,
     map_type: str = "SKYVIEW",
-    width: int = 1024,
-    height: int = 640,
-    capture_wide: bool = False,   # 추가
+    width: int = 896,
+    height: int = 576,
+    capture_wide: bool = False,
 ) -> Dict[str, Image.Image]:
+    if not js_key:
+        raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
 
-    renderer = get_kakao_renderer(
-        js_key=js_key,
-        width=width,
-        height=height,
-    )
+    renderer = get_kakao_renderer(js_key=js_key, width=width, height=height)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmpdir = Path(tmp)
+    result = {}
+    result["roof"] = renderer.render_to_pil(lat=lat, lon=lon, level=roof_level, map_type=map_type)
 
-        roof_path = tmpdir / f"roof_z{roof_level}.png"
-        wide_path = tmpdir / f"wide_z{wide_level}.png"
+    if capture_wide:
+        result["wide"] = renderer.render_to_pil(lat=lat, lon=lon, level=wide_level, map_type=map_type)
 
-        # ---------- roof 먼저 캡처 ----------
-        renderer.render_to_path(
-            lat=lat,
-            lon=lon,
-            level=roof_level,
-            out_path=roof_path,
-            map_type=map_type,
-        )
-
-        result = {
-            "roof": _open_rgb_image(roof_path)
-        }
-
-        # ---------- wide는 필요할 때만 ----------
-        if capture_wide:
-            renderer.render_to_path(
-                lat=lat,
-                lon=lon,
-                level=wide_level,
-                out_path=wide_path,
-                map_type=map_type,
-            )
-
-            result["wide"] = _open_rgb_image(wide_path)
-
-        return result
+    return result
