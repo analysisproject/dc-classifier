@@ -8,3 +8,4 @@ open-clip-torch
 scikit-learn
 pandas
 playwright
+openpyxl>=3.1.0
