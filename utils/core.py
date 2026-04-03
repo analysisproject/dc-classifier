@@ -233,17 +233,29 @@ def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-@st.cache_resource(show_spinner=True)
-def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFAULT_PRETRAINED):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        model_name,
-        pretrained=pretrained,
-    )
-    tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device)
-    model.eval()
-    return model, preprocess, tokenizer, device
+@st.cache_resource(show_spinner=False)
+def load_artifacts() -> Dict[str, Any]:
+    artifacts: Dict[str, Any] = {}
+
+    if LINEARPROBE_PATH.exists() and LINEARPROBE_PATH.stat().st_size > 0:
+        try:
+            artifacts["linearprobe"] = joblib.load(LINEARPROBE_PATH)
+        except Exception as e:
+            print(f"[ARTIFACT LOAD ERROR] linearprobe.joblib 로드 실패: {e}")
+    else:
+        print("[ARTIFACT LOAD SKIP] linearprobe.joblib 이 없거나 비어 있습니다.")
+
+    if CENTROIDS_PATH.exists() and CENTROIDS_PATH.stat().st_size > 0:
+        try:
+            data = np.load(CENTROIDS_PATH)
+            artifacts["pos_centroid"] = data["pos_centroid"]
+            artifacts["neg_centroid"] = data["neg_centroid"]
+        except Exception as e:
+            print(f"[ARTIFACT LOAD ERROR] centroids.npz 로드 실패: {e}")
+    else:
+        print("[ARTIFACT LOAD SKIP] centroids.npz 이 없거나 비어 있습니다.")
+
+    return artifacts
 
 
 @torch.no_grad()
