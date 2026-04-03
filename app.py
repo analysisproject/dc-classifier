@@ -155,7 +155,7 @@ if st.session_state.get("run_analysis", False):
         roof_img = images["roof"]
         wide_img = images.get("wide")
 
-       with st.spinner("모델 분석 중..."):
+        with st.spinner("모델 분석 중..."):
             model, preprocess, tokenizer, device = load_clip_model()
         
             if mode in ["linearprobe", "centroid"]:
