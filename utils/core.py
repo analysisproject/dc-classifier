@@ -410,32 +410,21 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
         "mapType": map_type,
     })
     url = f"{base_url}?{params}"
-    print(f"[INFO] Opening: {url}")
 
     page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}"))
     page.on("pageerror", lambda exc: print(f"[PAGEERROR] {exc}"))
 
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-    try:
-        page.wait_for_function(
-            "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-            timeout=30000
-        )
-    except Exception:
-        print("[DEBUG] kakao.maps not available")
-        print("[DEBUG] page content snippet:")
-        print(page.content()[:1000])
-        page.screenshot(path=str(out_path.with_suffix(".debug.png")))
-        raise
+    page.wait_for_function(
+        "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
+        timeout=30000
+    )
 
-    try:
-        page.wait_for_function("window.__MAP_READY__ === true", timeout=30000)
-    except Exception:
-        err = page.evaluate("window.__MAP_ERROR__")
-        print(f"[DEBUG] window.__MAP_ERROR__ = {err}")
-        page.screenshot(path=str(out_path.with_suffix(".debug.png")))
-        raise
+    page.wait_for_function(
+        "window.__MAP_READY__ === true",
+        timeout=30000
+    )
 
     err = page.evaluate("window.__MAP_ERROR__")
     if err:
