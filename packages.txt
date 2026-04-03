@@ -21,3 +21,4 @@ libxext6
 libx11-xcb1
 libxshmfence1
 libglu1-mesa
+chromium
