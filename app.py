@@ -22,6 +22,9 @@ st.set_page_config(
 
 init_single_session_state()
 
+if "run_single_analysis" not in st.session_state:
+    st.session_state["run_single_analysis"] = False
+    
 default_js_key = os.getenv("KAKAO_JS_KEY", "")
 default_rest_key = os.getenv("KAKAO_REST_KEY", "")
 
@@ -72,11 +75,12 @@ with col1:
             try:
                 lat = float(lat_text)
                 lng = float(lng_text)
-
+        
                 st.session_state["lat"] = lat
                 st.session_state["lng"] = lng
                 st.session_state["resolved_text"] = "GPS 좌표 입력"
-
+                st.session_state["run_single_analysis"] = True
+        
                 if rest_key:
                     rev = reverse_geocode(rest_key, lat, lng)
                     st.session_state["resolved_meta"] = rev
@@ -84,7 +88,7 @@ with col1:
                 else:
                     st.session_state["resolved_meta"] = None
                     st.session_state["resolved_address_str"] = None
-
+        
             except Exception as e:
                 st.error(f"GPS 좌표 입력 오류: {e}")
 
@@ -125,59 +129,62 @@ with col1:
 with col2:
     st.subheader("3) 위성 사진")
 
-    try:
-        with st.spinner("위성사진 렌더링 중..."):
-            images = capture_kakao_satellite_http(
-                js_key=js_key,
-                lat=st.session_state["lat"],
-                lon=st.session_state["lng"],
-                wide_level=wide_level,
-                roof_level=roof_level,
-                map_type=map_type,
-                width=1600,
-                height=900,
-            )
+    if not st.session_state.get("run_single_analysis", False):
+        st.info("좌측에서 위치를 입력한 뒤 '위치 확인 및 분석' 버튼을 누르세요.")
+    else:
+        try:
+            with st.spinner("위성사진 렌더링 중..."):
+                images = capture_kakao_satellite_http(
+                    js_key=js_key,
+                    lat=st.session_state["lat"],
+                    lon=st.session_state["lng"],
+                    wide_level=wide_level,
+                    roof_level=roof_level,
+                    map_type=map_type,
+                    width=1600,
+                    height=900,
+                )
 
-        wide_img = images["wide"]
-        roof_img = images["roof"]
+            wide_img = images["wide"]
+            roof_img = images["roof"]
 
-        st.markdown("**wide view**")
-        st.image(wide_img, use_container_width=True)
+            st.markdown("**wide view**")
+            st.image(wide_img, use_container_width=True)
 
-        st.markdown("**roof view**")
-        st.image(roof_img, use_container_width=True)
+            st.markdown("**roof view**")
+            st.image(roof_img, use_container_width=True)
 
-        with st.spinner("모델 분석 중..."):
-            model, preprocess, tokenizer, device = load_clip_model()
-            artifacts = load_artifacts()
+            with st.spinner("모델 분석 중..."):
+                model, preprocess, tokenizer, device = load_clip_model()
+                artifacts = load_artifacts()
 
-            roof_result = classify_pil_image(
-                pil_img=roof_img,
-                mode=mode,
-                model=model,
-                preprocess=preprocess,
-                tokenizer=tokenizer,
-                device=device,
-                artifacts=artifacts,
-            )
+                roof_result = classify_pil_image(
+                    pil_img=roof_img,
+                    mode=mode,
+                    model=model,
+                    preprocess=preprocess,
+                    tokenizer=tokenizer,
+                    device=device,
+                    artifacts=artifacts,
+                )
 
-            wide_result = classify_pil_image(
-                pil_img=wide_img,
-                mode=mode,
-                model=model,
-                preprocess=preprocess,
-                tokenizer=tokenizer,
-                device=device,
-                artifacts=artifacts,
-            )
+                wide_result = classify_pil_image(
+                    pil_img=wide_img,
+                    mode=mode,
+                    model=model,
+                    preprocess=preprocess,
+                    tokenizer=tokenizer,
+                    device=device,
+                    artifacts=artifacts,
+                )
 
-    except Exception as e:
-        st.error(f"분석 중 오류: {e}")
-        roof_result = None
-        wide_result = None
-        wide_img = None
-        roof_img = None
-
+        except Exception as e:
+            st.error(f"분석 중 오류: {e}")
+            roof_result = None
+            wide_result = None
+            wide_img = None
+            roof_img = None
+            
 with col3:
     st.subheader("4) 최종 판정")
 
