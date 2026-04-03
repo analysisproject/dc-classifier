@@ -3,7 +3,7 @@ pandas
 numpy
 pillow
 torch
-open_clip_torch
+open-clip-torch
 joblib
 requests
 playwright
