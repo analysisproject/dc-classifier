@@ -582,9 +582,14 @@ def capture_kakao_satellite_http(
     map_type: str = "SKYVIEW",
     width: int = 1024,
     height: int = 640,
-    capture_wide: bool = False,
+    capture_wide: bool = False,   # 추가
 ) -> Dict[str, Image.Image]:
-    renderer = get_kakao_renderer(js_key=js_key, width=width, height=height)
+
+    renderer = get_kakao_renderer(
+        js_key=js_key,
+        width=width,
+        height=height,
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
@@ -592,6 +597,7 @@ def capture_kakao_satellite_http(
         roof_path = tmpdir / f"roof_z{roof_level}.png"
         wide_path = tmpdir / f"wide_z{wide_level}.png"
 
+        # ---------- roof 먼저 캡처 ----------
         renderer.render_to_path(
             lat=lat,
             lon=lon,
@@ -604,6 +610,7 @@ def capture_kakao_satellite_http(
             "roof": _open_rgb_image(roof_path)
         }
 
+        # ---------- wide는 필요할 때만 ----------
         if capture_wide:
             renderer.render_to_path(
                 lat=lat,
@@ -612,6 +619,7 @@ def capture_kakao_satellite_http(
                 out_path=wide_path,
                 map_type=map_type,
             )
+
             result["wide"] = _open_rgb_image(wide_path)
 
         return result
