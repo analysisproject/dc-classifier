@@ -233,7 +233,6 @@ def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-@st.cache_resource(show_spinner=False)
 def load_artifacts() -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
 
@@ -497,6 +496,36 @@ class KakaoMapRenderer:
         png_bytes = self.page.locator("#map").screenshot(type="png")
         return Image.open(BytesIO(png_bytes)).convert("RGB")
 
+    def close(self):
+        try:
+            if hasattr(self, "page") and self.page is not None:
+                self.page.close()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "context") and self.context is not None:
+                self.context.close()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "browser") and self.browser is not None:
+                self.browser.close()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "playwright") and self.playwright is not None:
+                self.playwright.stop()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "tmpdir_obj") and self.tmpdir_obj is not None:
+                self.tmpdir_obj.cleanup()
+        except Exception:
+            pass
 
 @st.cache_resource(show_spinner=False)
 def get_kakao_renderer(js_key: str, width: int = 896, height: int = 576):
@@ -520,13 +549,20 @@ def capture_kakao_satellite_http(
 
     renderer = get_kakao_renderer(js_key=js_key, width=width, height=height)
 
-    result: Dict[str, Image.Image] = {}
-    result["roof"] = renderer.render_to_pil(lat=lat, lon=lon, level=roof_level, map_type=map_type)
+    try:
+        result: Dict[str, Image.Image] = {}
+        result["roof"] = renderer.render_to_pil(
+            lat=lat, lon=lon, level=roof_level, map_type=map_type
+        )
 
-    if capture_wide:
-        result["wide"] = renderer.render_to_pil(lat=lat, lon=lon, level=wide_level, map_type=map_type)
+        if capture_wide:
+            result["wide"] = renderer.render_to_pil(
+                lat=lat, lon=lon, level=wide_level, map_type=map_type
+            )
 
-    return result
+        return result
+    finally:
+        renderer.close()
 
 import pandas as pd
 import io
