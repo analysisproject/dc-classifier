@@ -197,8 +197,6 @@ def ensure_playwright_browser() -> None:
         raise RuntimeError(f"Playwright browser 설치 실패: {e}")
 
 
-ensure_playwright_browser()
-
 
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
@@ -467,6 +465,8 @@ def capture_kakao_satellite_http(
 ) -> Dict[str, Image.Image]:
     if not js_key:
         raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
+
+    ensure_playwright_browser()
 
     renderer = get_kakao_renderer(js_key=js_key, width=width, height=height)
 
