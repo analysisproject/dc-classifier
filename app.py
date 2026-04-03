@@ -2,7 +2,7 @@ import streamlit as st
 
 from utils.core import (
     init_single_session_state,
-    render_shared_sidebar,
+    get_secret_or_env,
     reverse_geocode,
     format_reverse_address,
     geocode_address,
@@ -10,6 +10,8 @@ from utils.core import (
     load_clip_model,
     load_artifacts,
     classify_pil_image,
+    LINEARPROBE_PATH,
+    CENTROIDS_PATH,
 )
 
 st.set_page_config(
