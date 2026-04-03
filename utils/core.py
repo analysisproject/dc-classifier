@@ -469,12 +469,13 @@ class KakaoMapRenderer:
         self.page.goto(
             (self.tmpdir / "index.html").as_uri(),
             wait_until="domcontentloaded",
-            timeout=60000
+            timeout=60000,
         )
         self.page.wait_for_function(
             "() => typeof window.kakao !== 'undefined' && typeof window.kakao.maps !== 'undefined' && window.__MAP_OBJ__ !== null",
             timeout=60000,
         )
+
     def render_to_pil(self, lat: float, lon: float, level: int, map_type: str = "SKYVIEW") -> Image.Image:
         self.page.evaluate(
             """
@@ -527,8 +528,7 @@ class KakaoMapRenderer:
         except Exception:
             pass
 
-@st.cache_resource(show_spinner=False)
-def get_kakao_renderer(js_key: str, width: int = 896, height: int = 576):
+def get_kakao_renderer(js_key: str, width: int = 1024, height: int = 768):
     ensure_playwright_browser()
     return KakaoMapRenderer(js_key=js_key, width=width, height=height)
 
@@ -552,17 +552,24 @@ def capture_kakao_satellite_http(
     try:
         result: Dict[str, Image.Image] = {}
         result["roof"] = renderer.render_to_pil(
-            lat=lat, lon=lon, level=roof_level, map_type=map_type
+            lat=lat,
+            lon=lon,
+            level=roof_level,
+            map_type=map_type,
         )
 
         if capture_wide:
             result["wide"] = renderer.render_to_pil(
-                lat=lat, lon=lon, level=wide_level, map_type=map_type
+                lat=lat,
+                lon=lon,
+                level=wide_level,
+                map_type=map_type,
             )
 
         return result
     finally:
         renderer.close()
+
 
 import pandas as pd
 import io
