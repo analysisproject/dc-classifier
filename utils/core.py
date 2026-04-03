@@ -1,14 +1,13 @@
 import os
 import sys
 import subprocess
+import tempfile
+from io import BytesIO
 from pathlib import Path
+from typing import Optional, Tuple, Dict, Any, List
 
 PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
-
-import tempfile
-from io import BytesIO
-from typing import Optional, Tuple, Dict, Any, List
 
 import joblib
 import numpy as np
@@ -156,9 +155,14 @@ os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
 
 def ensure_playwright_browser() -> None:
-    browser_dir = Path(PLAYWRIGHT_BROWSERS_PATH)
-    if browser_dir.exists() and any(browser_dir.iterdir()):
+    browser_root = Path(PLAYWRIGHT_BROWSERS_PATH)
+    expected = list(browser_root.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
+
+    # 실제 실행 파일이 있을 때만 설치 생략
+    if any(p.exists() for p in expected):
         return
+
+    browser_root.mkdir(parents=True, exist_ok=True)
 
     try:
         result = subprocess.run(
@@ -167,6 +171,7 @@ def ensure_playwright_browser() -> None:
                 "-m",
                 "playwright",
                 "install",
+                "--force",
                 "--with-deps",
                 "--only-shell",
                 "chromium",
@@ -176,13 +181,20 @@ def ensure_playwright_browser() -> None:
             text=True,
             env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": PLAYWRIGHT_BROWSERS_PATH},
         )
-        if result.returncode != 0:
-            print("[PLAYWRIGHT INSTALL STDOUT]")
-            print(result.stdout)
-            print("[PLAYWRIGHT INSTALL STDERR]")
-            print(result.stderr)
+
+        print("[PLAYWRIGHT INSTALL STDOUT]")
+        print(result.stdout)
+        print("[PLAYWRIGHT INSTALL STDERR]")
+        print(result.stderr)
+
+        expected = list(browser_root.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
+        if result.returncode != 0 or not any(p.exists() for p in expected):
+            raise RuntimeError(
+                "Playwright headless shell 설치가 완료되지 않았습니다. "
+                f"returncode={result.returncode}"
+            )
     except Exception as e:
-        print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
+        raise RuntimeError(f"Playwright browser 설치 실패: {e}")
 
 
 ensure_playwright_browser()
