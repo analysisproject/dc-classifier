@@ -42,16 +42,15 @@ with st.sidebar:
 
     show_wide = st.checkbox("wide view도 함께 렌더링", value=False)
 
-    image_width = st.select_slider(
-        "이미지 너비",
-        options=[768, 896, 1024],
-        value=896,
-    )
-    image_height = st.select_slider(
-        "이미지 높이",
-        options=[512, 576, 640],
-        value=576,
-    )
+    # wide view는 항상 함께 렌더링
+    show_wide = True
+
+    # 이미지 크기는 고정 (기존 큰 값으로 유지)
+    image_width = 1024
+    image_height = 768
+
+    st.caption(f"이미지 크기: {image_width} x {image_height} (고정)")
+    st.caption("wide view는 항상 함께 렌더링됩니다.")
 
     wide_level = st.slider("wide level", 0, 6, 2)
     roof_level = st.slider("roof level", 0, 6, 1)
@@ -208,12 +207,14 @@ with col2:
     if result is None:
         st.info("위치 확인 및 분석 버튼을 누르면 여기에서 위성 사진이 생성됩니다.")
     else:
-        st.markdown("**roof view**")
+        st.markdown("**roof view (대표 판정 기준)**")
         st.image(result["roof_img"], use_container_width=True)
 
+        st.markdown("**wide view (보조 확인용)**")
         if result["wide_img"] is not None:
-            st.markdown("**wide view**")
             st.image(result["wide_img"], use_container_width=True)
+        else:
+            st.warning("wide view 이미지가 생성되지 않았습니다.")
 
 with col3:
     st.subheader("4) 최종 판정")
