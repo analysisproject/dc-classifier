@@ -538,11 +538,32 @@ import streamlit as st
 # =========================
 def render_shared_sidebar(title):
 
+    import os
+    import streamlit as st
+
+    def get_secret_or_env(name, default=""):
+        try:
+            return st.secrets.get(name, os.getenv(name, default))
+        except Exception:
+            return os.getenv(name, default)
+
+    default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
+    default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
+
     with st.sidebar:
         st.header("설정")
 
-        js_key = st.text_input("JavaScript Key", type="password")
-        rest_key = st.text_input("REST API Key", type="password")
+        js_key = st.text_input(
+            "JavaScript Key",
+            value=default_js_key,
+            type="password"
+        )
+
+        rest_key = st.text_input(
+            "REST API Key",
+            value=default_rest_key,
+            type="password"
+        )
 
         mode = st.selectbox(
             "분류 모드",
