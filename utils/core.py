@@ -17,6 +17,20 @@ import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
+import subprocess
+import shutil
+
+def ensure_playwright_browser():
+    if shutil.which("playwright") is not None:
+        try:
+            subprocess.run(
+                ["playwright", "install", "chromium"],
+                check=False
+            )
+        except Exception:
+            pass
+
+ensure_playwright_browser()
 
 # ============================================================
 # Paths / constants
