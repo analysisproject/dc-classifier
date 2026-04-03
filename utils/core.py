@@ -153,6 +153,7 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(key, default)
     if value is not None and str(value).strip():
         return str(value).strip()
+
     return None
 
 
