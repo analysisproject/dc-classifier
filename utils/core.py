@@ -615,8 +615,8 @@ def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def render_shared_sidebar(page_title: str):
-    default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
-    default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
+    default_js_key = os.getenv("KAKAO_JS_KEY", "")
+    default_rest_key = os.getenv("KAKAO_REST_KEY", "")
 
     with st.sidebar:
         st.header(page_title)
