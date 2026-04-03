@@ -4,6 +4,8 @@ import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from functools import partial
 
 import joblib
 import numpy as np
@@ -14,8 +16,7 @@ import streamlit as st
 import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from functools import partial
+
 # ============================================================
 # Paths / constants
 # ============================================================
