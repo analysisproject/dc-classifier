@@ -443,3 +443,4 @@ def capture_kakao_satellite_http(
         result["wide"] = renderer.render_to_pil(lat=lat, lon=lon, level=wide_level, map_type=map_type)
 
     return result
+# touch
