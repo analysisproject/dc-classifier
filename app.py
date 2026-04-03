@@ -6,17 +6,18 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 from urllib.parse import urlencode
 from typing import Optional, Tuple, Dict, Any, List
-import pandas as pd
 from io import BytesIO
 
 import joblib
 import numpy as np
 import open_clip
+import pandas as pd
 import requests
 import streamlit as st
 import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
+
 
 # ============================================================
 # Page config
@@ -26,6 +27,7 @@ st.set_page_config(
     page_icon="🛰️",
     layout="wide",
 )
+
 
 # ============================================================
 # Paths / constants
@@ -145,8 +147,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </html>
 """
 
+
 # ============================================================
-# Helpers
+# Generic helpers
 # ============================================================
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
@@ -161,6 +164,33 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     if value is not None and str(value).strip():
         return str(value).strip()
     return None
+
+
+def init_single_session_state() -> None:
+    defaults = {
+        "lat": DEFAULT_LAT,
+        "lng": DEFAULT_LNG,
+        "resolved_text": "GPS 좌표 입력",
+        "resolved_meta": None,
+        "resolved_address_str": None,
+        "run_analysis": False,
+        "single_result_ready": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="results")
+    return output.getvalue()
+
+
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + np.exp(-x))
+
 
 # ============================================================
 # Model helpers
@@ -177,6 +207,7 @@ def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFA
     model.eval()
     return model, preprocess, tokenizer, device
 
+
 @torch.no_grad()
 def encode_pil_image(model, preprocess, pil_img: Image.Image, device: str) -> np.ndarray:
     x = preprocess(pil_img.convert("RGB")).unsqueeze(0).to(device)
@@ -184,12 +215,14 @@ def encode_pil_image(model, preprocess, pil_img: Image.Image, device: str) -> np
     feats = feats / feats.norm(dim=-1, keepdim=True)
     return feats.detach().cpu().numpy()[0]
 
+
 @torch.no_grad()
 def encode_texts(model, tokenizer, texts: List[str], device: str) -> np.ndarray:
     tokens = tokenizer(texts).to(device)
     feats = model.encode_text(tokens)
     feats = feats / feats.norm(dim=-1, keepdim=True)
     return feats.detach().cpu().numpy()
+
 
 @st.cache_resource(show_spinner=False)
 def load_artifacts() -> Dict[str, Any]:
@@ -205,8 +238,6 @@ def load_artifacts() -> Dict[str, Any]:
 
     return artifacts
 
-def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + np.exp(-x))
 
 def classify_pil_image(
     pil_img: Image.Image,
@@ -310,13 +341,15 @@ def classify_pil_image(
     )
     return result
 
+
 # ============================================================
-# Kakao Local API
+# Kakao Local API helpers
 # ============================================================
 def get_auth_headers(rest_key: str) -> Dict[str, str]:
     if not rest_key or not rest_key.strip():
         raise ValueError("REST API Key가 비어 있습니다.")
     return {"Authorization": f"KakaoAK {rest_key.strip()}"}
+
 
 def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, dict]]:
     url = "https://dapi.kakao.com/v2/local/search/address.json"
@@ -338,6 +371,7 @@ def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, d
     lat = float(doc["y"])
     return lat, lng, doc
 
+
 def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
     url = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
     headers = get_auth_headers(rest_key)
@@ -352,6 +386,7 @@ def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
     docs = data.get("documents", [])
     return docs[0] if docs else None
 
+
 def format_reverse_address(doc: Optional[dict]) -> str:
     if not doc:
         return "주소를 찾지 못했습니다."
@@ -363,6 +398,7 @@ def format_reverse_address(doc: Optional[dict]) -> str:
         return addr["address_name"]
     return "주소를 찾지 못했습니다."
 
+
 # ============================================================
 # Local HTTP server for Kakao rendering
 # ============================================================
@@ -370,11 +406,11 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+
 def start_server(directory: Path, host: str, port: int):
     handler = partial(QuietHandler, directory=str(directory))
-
     httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.allow_reuse_address = True   # 포트 재사용 허용
+    httpd.allow_reuse_address = True
 
     thread = threading.Thread(
         target=httpd.serve_forever,
@@ -383,6 +419,7 @@ def start_server(directory: Path, host: str, port: int):
     thread.start()
 
     return httpd
+
 
 def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
     params = urlencode({
@@ -405,6 +442,7 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
         raise RuntimeError(f"Kakao map render error: {err}")
 
     page.locator("#map").screenshot(path=str(out_path))
+
 
 def capture_kakao_satellite_http(
     js_key: str,
@@ -460,6 +498,10 @@ def capture_kakao_satellite_http(
             "roof": Image.open(roof_path).convert("RGB"),
         }
 
+
+# ============================================================
+# Single / batch analysis helpers
+# ============================================================
 def analyze_one_coordinate(
     js_key: str,
     rest_key: Optional[str],
@@ -475,20 +517,16 @@ def analyze_one_coordinate(
     device: str,
     artifacts: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    한 개 좌표에 대해 위성사진을 캡처하고 roof/wide 결과를 반환.
-    최종 판정은 roof 기준.
-    """
     images = capture_kakao_satellite_http(
         js_key=js_key,
-        lat=st.session_state["lat"],
-        lon=st.session_state["lng"],
+        lat=lat,
+        lon=lng,
         wide_level=wide_level,
         roof_level=roof_level,
         map_type=map_type,
         width=1600,
         height=900,
-    )    
+    )
 
     wide_img = images["wide"]
     roof_img = images["roof"]
@@ -531,46 +569,47 @@ def analyze_one_coordinate(
         "wide_label": wide_result["label"],
         "wide_probability": float(wide_result["probability"]),
         "wide_score": float(wide_result["score"]),
-        "final_label": roof_result["label"],   # 최종은 roof 기준
+        "final_label": roof_result["label"],
         "final_probability": float(roof_result["probability"]),
         "mode": mode,
     }
 
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="results")
-    return output.getvalue()
 
 # ============================================================
-# Session state
+# Session init
 # ============================================================
-defaults = {
-    "lat": DEFAULT_LAT,
-    "lng": DEFAULT_LNG,
-    "resolved_text": "GPS 좌표 입력",
-    "resolved_meta": None,
-    "resolved_address_str": None,
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+init_single_session_state()
+
 
 # ============================================================
-# UI
+# UI header
 # ============================================================
 st.title("🛰️ Satellite Data Center Classifier")
 st.caption("GPS 또는 주소를 입력하면 위성사진을 불러오고 roof view 기준으로 데이터센터 여부를 판정합니다.")
 
-default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
-default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
 
+default_js_key = get_secret_or_env("KAKAO_JS_KEY", "") or ""
+default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "") or ""
+
+
+# ============================================================
+# Sidebar
+# ============================================================
 with st.sidebar:
-    st.header("설정")
+    st.page_link("app.py", label="Single Analysis", icon="🛰️")
+    st.page_link("pages/2_Batch_Excel_Analysis.py", label="File Upload(Excel, csv)", icon="📄")
+
+    st.markdown("---")
+
+    input_mode = st.radio("입력 방식", ["GPS 입력", "주소 입력"], index=0)
+
+    st.markdown("---")
+
     js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
     rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
 
-    input_mode = st.radio("입력 방식", ["GPS 입력", "주소 입력"], index=0)
+    st.markdown("---")
+
     mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
     map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
     wide_level = st.slider("wide level", 0, 6, 2)
@@ -580,13 +619,10 @@ with st.sidebar:
     st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
     st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
 
-    st.markdown("---")
-    st.subheader("엑셀 일괄 분석")
-    uploaded_file = st.file_uploader(
-        "엑셀 업로드 (.xlsx, .csv)",
-        type=["xlsx", "csv"]
-    )
 
+# ============================================================
+# Main columns
+# ============================================================
 col1, col2, col3 = st.columns([0.9, 1.05, 1.05], gap="large")
 
 roof_result = None
@@ -594,6 +630,10 @@ wide_result = None
 wide_img = None
 roof_img = None
 
+
+# ============================================================
+# Column 1 - input
+# ============================================================
 with col1:
     st.subheader("1) 위치 입력")
 
@@ -618,7 +658,12 @@ with col1:
                     st.session_state["resolved_meta"] = None
                     st.session_state["resolved_address_str"] = None
 
+                st.session_state["run_analysis"] = True
+                st.session_state["single_result_ready"] = True
+
             except Exception as e:
+                st.session_state["run_analysis"] = False
+                st.session_state["single_result_ready"] = False
                 st.error(f"GPS 좌표 입력 오류: {e}")
 
     else:
@@ -626,13 +671,19 @@ with col1:
 
         if st.button("위치 확인 및 분석", type="primary", use_container_width=True):
             if not rest_key:
+                st.session_state["run_analysis"] = False
+                st.session_state["single_result_ready"] = False
                 st.error("주소 입력 모드에서는 REST API Key가 필요합니다.")
             elif not address.strip():
+                st.session_state["run_analysis"] = False
+                st.session_state["single_result_ready"] = False
                 st.warning("주소를 입력하세요.")
             else:
                 try:
                     geo = geocode_address(rest_key, address.strip())
                     if geo is None:
+                        st.session_state["run_analysis"] = False
+                        st.session_state["single_result_ready"] = False
                         st.warning("주소 검색 결과가 없습니다.")
                     else:
                         lat, lng, meta = geo
@@ -641,85 +692,103 @@ with col1:
                         st.session_state["resolved_text"] = address.strip()
                         st.session_state["resolved_meta"] = meta
                         st.session_state["resolved_address_str"] = meta.get("address_name", address.strip())
+                        st.session_state["run_analysis"] = True
+                        st.session_state["single_result_ready"] = True
                 except Exception as e:
+                    st.session_state["run_analysis"] = False
+                    st.session_state["single_result_ready"] = False
                     st.error(f"주소 검색 오류: {e}")
 
     st.markdown("---")
     st.subheader("2) 현재 선택 위치")
     st.write(f"**위도 / 경도**: {st.session_state['lat']:.6f}, {st.session_state['lng']:.6f}")
+
     if st.session_state.get("resolved_text"):
         st.write(f"**입력값**: {st.session_state['resolved_text']}")
+
     if st.session_state.get("resolved_address_str"):
         st.write(f"**주소**: {st.session_state['resolved_address_str']}")
+
     if st.session_state.get("resolved_meta") is not None:
         with st.expander("상세 위치 정보", expanded=False):
             st.json(st.session_state["resolved_meta"], expanded=False)
 
+
+# ============================================================
+# Column 2 - image rendering + model analysis
+# ============================================================
 with col2:
     st.subheader("3) 위성 사진")
 
-    try:
-        with st.spinner("위성사진 렌더링 중..."):
-            images = capture_kakao_satellite_http(
-                js_key=js_key,
-                lat=st.session_state["lat"],
-                lon=st.session_state["lng"],
-                wide_level=wide_level,
-                roof_level=roof_level,
-                map_type=map_type,
-                width=1600,
-                height=900,
-                host="127.0.0.1",
-                port=8000,
-            )
+    if not st.session_state.get("run_analysis", False):
+        st.info("좌측에서 위치를 입력하고 '위치 확인 및 분석' 버튼을 누르면 위성사진과 분석 결과가 표시됩니다.")
+    elif not js_key:
+        st.warning("JavaScript Key가 비어 있습니다. sidebar 입력값 또는 Streamlit secrets를 확인하세요.")
+    else:
+        try:
+            with st.spinner("위성사진 렌더링 중..."):
+                images = capture_kakao_satellite_http(
+                    js_key=js_key,
+                    lat=st.session_state["lat"],
+                    lon=st.session_state["lng"],
+                    wide_level=wide_level,
+                    roof_level=roof_level,
+                    map_type=map_type,
+                    width=1600,
+                    height=900,
+                )
 
-        wide_img = images["wide"]
-        roof_img = images["roof"]
+            wide_img = images["wide"]
+            roof_img = images["roof"]
 
-        st.markdown("**wide view**")
-        st.image(wide_img, use_container_width=True)
+            st.markdown("**wide view**")
+            st.image(wide_img, use_container_width=True)
 
-        st.markdown("**roof view**")
-        st.image(roof_img, use_container_width=True)
+            st.markdown("**roof view**")
+            st.image(roof_img, use_container_width=True)
 
-        with st.spinner("모델 분석 중..."):
-            model, preprocess, tokenizer, device = load_clip_model()
-            artifacts = load_artifacts()
+            with st.spinner("모델 분석 중..."):
+                model, preprocess, tokenizer, device = load_clip_model()
+                artifacts = load_artifacts()
 
-            roof_result = classify_pil_image(
-                pil_img=roof_img,
-                mode=mode,
-                model=model,
-                preprocess=preprocess,
-                tokenizer=tokenizer,
-                device=device,
-                artifacts=artifacts,
-            )
+                roof_result = classify_pil_image(
+                    pil_img=roof_img,
+                    mode=mode,
+                    model=model,
+                    preprocess=preprocess,
+                    tokenizer=tokenizer,
+                    device=device,
+                    artifacts=artifacts,
+                )
 
-            wide_result = classify_pil_image(
-                pil_img=wide_img,
-                mode=mode,
-                model=model,
-                preprocess=preprocess,
-                tokenizer=tokenizer,
-                device=device,
-                artifacts=artifacts,
-            )
+                wide_result = classify_pil_image(
+                    pil_img=wide_img,
+                    mode=mode,
+                    model=model,
+                    preprocess=preprocess,
+                    tokenizer=tokenizer,
+                    device=device,
+                    artifacts=artifacts,
+                )
 
-    except Exception as e:
-        st.error(f"분석 중 오류: {e}")
-        roof_result = None
-        wide_result = None
-        wide_img = None
-        roof_img = None
+        except Exception as e:
+            st.error(f"분석 중 오류: {e}")
+            roof_result = None
+            wide_result = None
+            wide_img = None
+            roof_img = None
 
 
+# ============================================================
+# Column 3 - final interpretation
+# ============================================================
 with col3:
-
     st.subheader("4) 최종 판정")
 
     try:
-        if roof_result is not None:
+        if not st.session_state.get("run_analysis", False):
+            st.info("분석 실행 전입니다.")
+        elif roof_result is not None:
             final_prob = float(roof_result["probability"])
             final_label = roof_result["label"]
             roof_score = float(roof_result["score"])
@@ -728,9 +797,6 @@ with col3:
             wide_score = float(wide_result["score"]) if wide_result is not None else None
             wide_label = wide_result["label"] if wide_result is not None else None
 
-            # ---------------------------------
-            # score 표시용 문구
-            # ---------------------------------
             if roof_result["mode"] in ["zeroshot", "centroid"]:
                 roof_score_label = "roof 판정 margin (유사도 차이)"
                 roof_score_display = f"{roof_score:.6f}"
@@ -750,9 +816,6 @@ with col3:
                     wide_score_display = f"{wide_score * 100:.2f}%"
                     wide_score_text = f"예측확률(score) {wide_score:.4f}"
 
-            # ---------------------------------
-            # 최종 판정
-            # ---------------------------------
             if final_label == "데이터센터":
                 st.success(f"판정: **{final_label}**")
             else:
@@ -767,9 +830,6 @@ with col3:
                 st.write(f"**wide 기준 데이터센터 확률**: `{wide_prob * 100:.2f}%`")
                 st.write(f"**{wide_score_label}**: `{wide_score_display}`")
 
-            # ---------------------------------
-            # 해석
-            # ---------------------------------
             st.markdown("**해석**")
             if wide_result is not None:
                 st.write(
@@ -780,57 +840,54 @@ with col3:
                     f"반면 wide 결과는 **{wide_label}** 이고, "
                     f"wide 기준 데이터센터 확률은 **{wide_prob:.4f}**, "
                     f"내부 판정값은 **{wide_score_text}** 입니다.\n\n"
-                    f"이처럼 roof와 wide를 함께 보는 이유는 두 이미지가 제공하는 정보의 성격이 다르기 때문입니다. "
-                    f"**roof view**는 대상 건물의 지붕 형상, 건물의 평면적 배치, "
-                    f"설비가 놓여 있을 가능성이 있는 구조를 더 직접적으로 보여주므로 "
-                    f"건물 자체를 판별하는 데 더 적합합니다. "
-                    f"반면 **wide view**는 주변 도로, 인접 건물, 산업단지나 상업지역 같은 "
-                    f"입지 맥락을 더 많이 포함하므로, 대상 건물 자체보다는 주변 환경을 해석하는 참고 정보에 가깝습니다.\n\n"
-                    f"따라서 현재 화면에서는 wide 결과도 함께 제시하지만, "
-                    f"**최종 라벨은 roof 결과만으로 결정**했습니다. "
-                    f"즉, 이번 사례에서는 roof에서 관찰되는 특징이 데이터센터 판정에 더 직접적이라고 보고, "
-                    f"wide는 그 판정을 보조적으로 해석하는 역할만 하도록 설계했습니다."
+                    f"roof view는 대상 건물의 지붕 형상과 설비 구조를 더 직접적으로 보여주므로 "
+                    f"건물 자체 판별에 더 적합합니다. "
+                    f"wide view는 주변 도로, 인접 건물, 산업단지·상업지역 같은 입지 맥락을 포함하므로 "
+                    f"보조 해석 정보로 활용했습니다."
                 )
             else:
                 st.write(
                     f"최종 판정은 **roof view 단일 결과**를 기준으로 했습니다. "
                     f"roof 결과는 **{final_label}** 이고, "
                     f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
-                    f"내부 판정값은 **{roof_score_text}** 입니다.\n\n"
-                    f"이 결과는 대상 건물의 지붕 구조와 평면 배치가 데이터센터형 특징에 얼마나 가까운지를 바탕으로 계산된 것입니다. "
-                    f"즉, 단순히 하나의 라벨만 출력한 것이 아니라, "
-                    f"모델이 데이터센터 쪽 특징과 비데이터센터 쪽 특징을 비교한 뒤 그 차이를 수치화하여 판정한 결과라고 이해하면 됩니다."
+                    f"내부 판정값은 **{roof_score_text}** 입니다."
                 )
 
-            # ---------------------------------
-            # score 계산 방식 설명
-            # ---------------------------------
             with st.expander("score 계산 방식 설명", expanded=False):
                 if roof_result["mode"] == "zeroshot":
                     st.write(
-                        "zeroshot에서는 score = 가장 높은 positive prompt 유사도 - "
-                        "가장 높은 negative prompt 유사도 입니다."
+                        "zeroshot에서는 score = 가장 높은 positive prompt 유사도 - 가장 높은 negative prompt 유사도 입니다."
                     )
                 elif roof_result["mode"] == "centroid":
                     st.write(
-                        "centroid에서는 score = positive centroid 유사도 - "
-                        "negative centroid 유사도 입니다."
+                        "centroid에서는 score = positive centroid 유사도 - negative centroid 유사도 입니다."
                     )
                 else:
                     st.write(
                         "linearprobe에서는 score를 predict_proba(데이터센터 확률)와 동일하게 사용했습니다."
                     )
-
         else:
             st.info("위성 사진이 생성되면 최종 판정이 여기에 표시됩니다.")
 
     except Exception as e:
         st.error(f"최종 판정 표시 오류: {e}")
 
+
+# ============================================================
+# Batch analysis
+# ============================================================
 st.markdown("---")
 st.header("5) 엑셀 일괄 분석")
 
-st.write("엑셀 또는 CSV에 `latitude`, `longitude` 컬럼이 있으면 각 행별로 확률을 계산합니다. `name` 컬럼이 있으면 결과에 함께 포함됩니다.")
+st.write(
+    "엑셀 또는 CSV에 `latitude`, `longitude` 컬럼이 있으면 각 행별로 확률을 계산합니다. "
+    "`name` 컬럼이 있으면 결과에 함께 포함됩니다."
+)
+
+uploaded_file = st.file_uploader(
+    "엑셀 업로드 (.xlsx, .csv)",
+    type=["xlsx", "csv"]
+)
 
 if uploaded_file is not None:
     try:
@@ -857,7 +914,6 @@ if uploaded_file is not None:
                     st.error("JavaScript Key가 필요합니다.")
                 else:
                     work_df = batch_df.copy()
-
                     work_df[lat_col] = pd.to_numeric(work_df[lat_col], errors="coerce")
                     work_df[lng_col] = pd.to_numeric(work_df[lng_col], errors="coerce")
 
@@ -899,6 +955,7 @@ if uploaded_file is not None:
                                 if name_col is not None:
                                     one["name"] = row[name_col]
 
+                                one["error"] = None
                                 results.append(one)
 
                             except Exception as e:
@@ -926,7 +983,6 @@ if uploaded_file is not None:
 
                         result_df = pd.DataFrame(results)
 
-                        # 컬럼 순서 정리
                         preferred_cols = []
                         if "name" in result_df.columns:
                             preferred_cols.append("name")
@@ -962,7 +1018,7 @@ if uploaded_file is not None:
                             st.download_button(
                                 "결과 CSV 다운로드",
                                 data=csv_bytes,
-                                file_name="satellite_classifier_results.csv",
+                                file_name="batch_analysis_results.csv",
                                 mime="text/csv",
                                 use_container_width=True,
                             )
@@ -970,7 +1026,7 @@ if uploaded_file is not None:
                             st.download_button(
                                 "결과 Excel 다운로드",
                                 data=xlsx_bytes,
-                                file_name="satellite_classifier_results.xlsx",
+                                file_name="batch_analysis_results.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
                             )
