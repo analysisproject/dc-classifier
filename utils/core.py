@@ -149,26 +149,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 """
 
 
-import sys
-
-PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
-
-
-import sys
-
-PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
-
-
 def ensure_playwright_browser() -> None:
     browser_root = Path(PLAYWRIGHT_BROWSERS_PATH)
-    expected = list(
-        browser_root.glob(
-            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
-        )
-    )
 
+    expected = list(
+        browser_root.glob("chromium-*/chrome-linux64/chrome")
+    )
     if any(p.exists() for p in expected):
         return
 
@@ -180,9 +166,6 @@ def ensure_playwright_browser() -> None:
             "-m",
             "playwright",
             "install",
-            "--force",
-            "--with-deps",
-            "--only-shell",
             "chromium",
         ],
         check=False,
@@ -197,15 +180,15 @@ def ensure_playwright_browser() -> None:
     print(result.stderr)
 
     expected = list(
-        browser_root.glob(
-            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
-        )
+        browser_root.glob("chromium-*/chrome-linux64/chrome")
     )
 
     if result.returncode != 0 or not any(p.exists() for p in expected):
         raise RuntimeError(
-            "Playwright headless shell 설치가 완료되지 않았습니다. "
-            f"returncode={result.returncode}"
+            "Playwright chromium 설치가 완료되지 않았습니다. "
+            f"returncode={result.returncode}\n"
+            f"stdout={result.stdout}\n"
+            f"stderr={result.stderr}"
         )
 
 
