@@ -16,7 +16,7 @@ import requests
 import streamlit as st
 import torch
 from PIL import Image
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
 # ============================================================
@@ -121,12 +121,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           fired = true;
           setTimeout(() => {
             window.__MAP_READY__ = true;
-          }, 1200);
+          }, 1500);
         }
 
         kakao.maps.event.addListener(map, "tilesloaded", markReadyOnce);
         kakao.maps.event.addListener(map, "idle", markReadyOnce);
-        setTimeout(markReadyOnce, 5000);
+
+        setTimeout(markReadyOnce, 7000);
 
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
@@ -154,20 +155,85 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     if value is not None and str(value).strip():
         return str(value).strip()
 
-    return None
+    return default
 
 
-def init_single_session_state():
+def init_single_session_state() -> None:
     defaults = {
         "lat": DEFAULT_LAT,
         "lng": DEFAULT_LNG,
         "resolved_text": "GPS 좌표 입력",
         "resolved_meta": None,
         "resolved_address_str": None,
+        "run_analysis": False,
+        "single_result_ready": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="results")
+    return output.getvalue()
+
+
+def read_batch_file(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        return pd.read_excel(uploaded_file)
+    raise ValueError("지원하지 않는 파일 형식입니다. csv, xlsx만 가능합니다.")
+
+
+def detect_lat_lng_name_columns(df: pd.DataFrame):
+    normalized_cols = {c.lower().strip(): c for c in df.columns}
+
+    lat_col = (
+        normalized_cols.get("latitude")
+        or normalized_cols.get("lat")
+        or normalized_cols.get("y")
+    )
+    lng_col = (
+        normalized_cols.get("longitude")
+        or normalized_cols.get("lng")
+        or normalized_cols.get("lon")
+        or normalized_cols.get("long")
+        or normalized_cols.get("x")
+    )
+    name_col = normalized_cols.get("name")
+
+    return lat_col, lng_col, name_col
+
+
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+# ============================================================
+# Sidebar helper
+# ============================================================
+def render_shared_sidebar(page_title: str):
+    default_js_key = get_secret_or_env("KAKAO_JS_KEY", "") or ""
+    default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "") or ""
+
+    with st.sidebar:
+        st.header(page_title)
+        js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
+        rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
+        mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
+        map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
+        wide_level = st.slider("wide level", 0, 6, 2)
+        roof_level = st.slider("roof level", 0, 6, 1)
+
+        st.markdown("---")
+        st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
+        st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
+
+    return js_key, rest_key, mode, map_type, wide_level, roof_level
 
 
 # ============================================================
@@ -215,10 +281,6 @@ def load_artifacts() -> Dict[str, Any]:
         artifacts["neg_centroid"] = data["neg_centroid"]
 
     return artifacts
-
-
-def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + np.exp(-x))
 
 
 def classify_pil_image(
@@ -402,6 +464,15 @@ def start_server(directory: Path, host: str, port: int):
     return httpd
 
 
+def _attach_page_debug_handlers_once(page):
+    if getattr(page, "_debug_handlers_attached", False):
+        return
+
+    page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}"))
+    page.on("pageerror", lambda exc: print(f"[PAGEERROR] {exc}"))
+    setattr(page, "_debug_handlers_attached", True)
+
+
 def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
     params = urlencode({
         "lat": lat,
@@ -411,19 +482,18 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
     })
     url = f"{base_url}?{params}"
 
-    page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}"))
-    page.on("pageerror", lambda exc: print(f"[PAGEERROR] {exc}"))
+    _attach_page_debug_handlers_once(page)
 
-    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    page.goto(url, wait_until="domcontentloaded", timeout=45000)
 
     page.wait_for_function(
         "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-        timeout=30000
+        timeout=45000
     )
 
     page.wait_for_function(
         "window.__MAP_READY__ === true",
-        timeout=30000
+        timeout=45000
     )
 
     err = page.evaluate("window.__MAP_ERROR__")
@@ -431,6 +501,11 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
         raise RuntimeError(f"Kakao map render error: {err}")
 
     page.locator("#map").screenshot(path=str(out_path))
+
+
+def _open_rgb_image(path: Path) -> Image.Image:
+    with Image.open(path) as img:
+        return img.convert("RGB").copy()
 
 
 def capture_kakao_satellite_http(
@@ -444,48 +519,64 @@ def capture_kakao_satellite_http(
     height: int = 900,
     host: str = "127.0.0.1",
     port: int = 0,
+    max_retries: int = 2,
 ) -> Dict[str, Image.Image]:
     if not js_key:
         raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmpdir = Path(tmp)
+    last_error = None
 
-        html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
-        (tmpdir / "index.html").write_text(html, encoding="utf-8")
+    for attempt in range(1, max_retries + 1):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
 
-        httpd = start_server(tmpdir, host, port)
-        actual_port = httpd.server_address[1]
-        base_url = f"http://{host}:{actual_port}/index.html"
+            html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
+            (tmpdir / "index.html").write_text(html, encoding="utf-8")
 
-        wide_path = tmpdir / f"wide_z{wide_level}.png"
-        roof_path = tmpdir / f"roof_z{roof_level}.png"
+            httpd = start_server(tmpdir, host, port)
+            actual_port = httpd.server_address[1]
+            base_url = f"http://{host}:{actual_port}/index.html"
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
+            wide_path = tmpdir / f"wide_z{wide_level}.png"
+            roof_path = tmpdir / f"roof_z{roof_level}.png"
+
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"]
+                    )
+                    context = browser.new_context(
+                        viewport={"width": width, "height": height},
+                        device_scale_factor=1,
+                    )
+                    page = context.new_page()
+
+                    render_one(page, base_url, lat, lon, wide_level, wide_path, map_type)
+                    render_one(page, base_url, lat, lon, roof_level, roof_path, map_type)
+
+                    context.close()
+                    browser.close()
+
+                return {
+                    "wide": _open_rgb_image(wide_path),
+                    "roof": _open_rgb_image(roof_path),
+                }
+
+            except PlaywrightTimeoutError as e:
+                last_error = RuntimeError(
+                    f"Kakao 지도 렌더링 시간 초과(attempt {attempt}/{max_retries}). "
+                    f"좌표=({lat}, {lon}), wide_level={wide_level}, roof_level={roof_level}, map_type={map_type}"
                 )
-                context = browser.new_context(
-                    viewport={"width": width, "height": height},
-                    device_scale_factor=1,
-                )
-                page = context.new_page()
+            except Exception as e:
+                last_error = e
+            finally:
+                try:
+                    httpd.shutdown()
+                finally:
+                    httpd.server_close()
 
-                render_one(page, base_url, lat, lon, wide_level, wide_path, map_type)
-                render_one(page, base_url, lat, lon, roof_level, roof_path, map_type)
-
-                context.close()
-                browser.close()
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
-
-        return {
-            "wide": Image.open(wide_path).convert("RGB"),
-            "roof": Image.open(roof_path).convert("RGB"),
-        }
+    raise RuntimeError(f"위성사진 캡처 실패: {last_error}")
 
 
 # ============================================================
@@ -573,51 +664,3 @@ def analyze_one_coordinate(
         row["wide_score"] = None
 
     return row
-
-
-def read_batch_file(uploaded_file) -> pd.DataFrame:
-    if uploaded_file.name.lower().endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    return pd.read_excel(uploaded_file)
-
-
-def detect_lat_lng_name_columns(df: pd.DataFrame):
-    normalized_cols = {c.lower().strip(): c for c in df.columns}
-
-    lat_col = normalized_cols.get("latitude") or normalized_cols.get("lat")
-    lng_col = (
-        normalized_cols.get("longitude")
-        or normalized_cols.get("lng")
-        or normalized_cols.get("lon")
-        or normalized_cols.get("long")
-    )
-    name_col = normalized_cols.get("name")
-
-    return lat_col, lng_col, name_col
-
-
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="results")
-    return output.getvalue()
-
-
-def render_shared_sidebar(page_title: str):
-    default_js_key = os.getenv("KAKAO_JS_KEY", "")
-    default_rest_key = os.getenv("KAKAO_REST_KEY", "")
-
-    with st.sidebar:
-        st.header(page_title)
-        js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
-        rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
-        mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
-        map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
-        wide_level = st.slider("wide level", 0, 6, 2)
-        roof_level = st.slider("roof level", 0, 6, 1)
-
-        st.markdown("---")
-        st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
-        st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
-
-    return js_key, rest_key, mode, map_type, wide_level, roof_level
