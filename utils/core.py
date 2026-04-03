@@ -413,7 +413,7 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
     page.wait_for_function(
         "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-        timeout=10000
+        timeout=30000
     )
     page.wait_for_function("window.__MAP_READY__ === true", timeout=30000)
 
