@@ -6,8 +6,6 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 from urllib.parse import urlencode
 from typing import Optional, Tuple, Dict, Any, List
-import pandas as pd
-from io import BytesIO
 
 import joblib
 import numpy as np
@@ -372,16 +370,9 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 def start_server(directory: Path, host: str, port: int):
     handler = partial(QuietHandler, directory=str(directory))
-
     httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.allow_reuse_address = True   # 포트 재사용 허용
-
-    thread = threading.Thread(
-        target=httpd.serve_forever,
-        daemon=True
-    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-
     return httpd
 
 def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
@@ -416,7 +407,7 @@ def capture_kakao_satellite_http(
     width: int = 1600,
     height: int = 900,
     host: str = "127.0.0.1",
-    port: int = 0,
+    port: int = 8000,
 ) -> Dict[str, Image.Image]:
     if not js_key:
         raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
@@ -428,9 +419,7 @@ def capture_kakao_satellite_http(
         (tmpdir / "index.html").write_text(html, encoding="utf-8")
 
         httpd = start_server(tmpdir, host, port)
-
-        actual_port = httpd.server_address[1]
-        base_url = f"http://{host}:{actual_port}/index.html"
+        base_url = f"http://{host}:{port}/index.html"
 
         wide_path = tmpdir / f"wide_z{wide_level}.png"
         roof_path = tmpdir / f"roof_z{roof_level}.png"
@@ -459,88 +448,6 @@ def capture_kakao_satellite_http(
             "wide": Image.open(wide_path).convert("RGB"),
             "roof": Image.open(roof_path).convert("RGB"),
         }
-
-def analyze_one_coordinate(
-    js_key: str,
-    rest_key: Optional[str],
-    lat: float,
-    lng: float,
-    mode: str,
-    map_type: str,
-    wide_level: int,
-    roof_level: int,
-    model,
-    preprocess,
-    tokenizer,
-    device: str,
-    artifacts: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    한 개 좌표에 대해 위성사진을 캡처하고 roof/wide 결과를 반환.
-    최종 판정은 roof 기준.
-    """
-    images = capture_kakao_satellite_http(
-        js_key=js_key,
-        lat=st.session_state["lat"],
-        lon=st.session_state["lng"],
-        wide_level=wide_level,
-        roof_level=roof_level,
-        map_type=map_type,
-        width=1600,
-        height=900,
-    )    
-
-    wide_img = images["wide"]
-    roof_img = images["roof"]
-
-    roof_result = classify_pil_image(
-        pil_img=roof_img,
-        mode=mode,
-        model=model,
-        preprocess=preprocess,
-        tokenizer=tokenizer,
-        device=device,
-        artifacts=artifacts,
-    )
-
-    wide_result = classify_pil_image(
-        pil_img=wide_img,
-        mode=mode,
-        model=model,
-        preprocess=preprocess,
-        tokenizer=tokenizer,
-        device=device,
-        artifacts=artifacts,
-    )
-
-    address_text = None
-    if rest_key:
-        try:
-            rev = reverse_geocode(rest_key, lat, lng)
-            address_text = format_reverse_address(rev)
-        except Exception:
-            address_text = None
-
-    return {
-        "latitude": lat,
-        "longitude": lng,
-        "resolved_address": address_text,
-        "roof_label": roof_result["label"],
-        "roof_probability": float(roof_result["probability"]),
-        "roof_score": float(roof_result["score"]),
-        "wide_label": wide_result["label"],
-        "wide_probability": float(wide_result["probability"]),
-        "wide_score": float(wide_result["score"]),
-        "final_label": roof_result["label"],   # 최종은 roof 기준
-        "final_probability": float(roof_result["probability"]),
-        "mode": mode,
-    }
-
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="results")
-    return output.getvalue()
 
 # ============================================================
 # Session state
@@ -579,13 +486,6 @@ with st.sidebar:
     st.markdown("---")
     st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
     st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
-
-    st.markdown("---")
-    st.subheader("엑셀 일괄 분석")
-    uploaded_file = st.file_uploader(
-        "엑셀 업로드 (.xlsx, .csv)",
-        type=["xlsx", "csv"]
-    )
 
 col1, col2, col3 = st.columns([0.9, 1.05, 1.05], gap="large")
 
@@ -826,154 +726,3 @@ with col3:
 
     except Exception as e:
         st.error(f"최종 판정 표시 오류: {e}")
-
-st.markdown("---")
-st.header("5) 엑셀 일괄 분석")
-
-st.write("엑셀 또는 CSV에 `latitude`, `longitude` 컬럼이 있으면 각 행별로 확률을 계산합니다. `name` 컬럼이 있으면 결과에 함께 포함됩니다.")
-
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            batch_df = pd.read_csv(uploaded_file)
-        else:
-            batch_df = pd.read_excel(uploaded_file)
-
-        st.write("업로드된 데이터 미리보기")
-        st.dataframe(batch_df.head(), use_container_width=True)
-
-        normalized_cols = {c.lower().strip(): c for c in batch_df.columns}
-        lat_col = normalized_cols.get("latitude")
-        lng_col = normalized_cols.get("longitude")
-        name_col = normalized_cols.get("name") if "name" in normalized_cols else None
-
-        if lat_col is None or lng_col is None:
-            st.error("파일에 `latitude`, `longitude` 컬럼이 반드시 있어야 합니다.")
-        else:
-            run_batch = st.button("엑셀 일괄 분석 실행", type="primary", use_container_width=True)
-
-            if run_batch:
-                if not js_key:
-                    st.error("JavaScript Key가 필요합니다.")
-                else:
-                    work_df = batch_df.copy()
-
-                    work_df[lat_col] = pd.to_numeric(work_df[lat_col], errors="coerce")
-                    work_df[lng_col] = pd.to_numeric(work_df[lng_col], errors="coerce")
-
-                    valid_df = work_df.dropna(subset=[lat_col, lng_col]).copy()
-
-                    if valid_df.empty:
-                        st.warning("유효한 latitude/longitude 값이 없습니다.")
-                    else:
-                        model, preprocess, tokenizer, device = load_clip_model()
-                        artifacts = load_artifacts()
-
-                        results = []
-                        progress = st.progress(0)
-                        status = st.empty()
-
-                        total = len(valid_df)
-
-                        for idx, (_, row) in enumerate(valid_df.iterrows(), start=1):
-                            lat = float(row[lat_col])
-                            lng = float(row[lng_col])
-
-                            try:
-                                one = analyze_one_coordinate(
-                                    js_key=js_key,
-                                    rest_key=rest_key if rest_key else None,
-                                    lat=lat,
-                                    lng=lng,
-                                    mode=mode,
-                                    map_type=map_type,
-                                    wide_level=wide_level,
-                                    roof_level=roof_level,
-                                    model=model,
-                                    preprocess=preprocess,
-                                    tokenizer=tokenizer,
-                                    device=device,
-                                    artifacts=artifacts,
-                                )
-
-                                if name_col is not None:
-                                    one["name"] = row[name_col]
-
-                                results.append(one)
-
-                            except Exception as e:
-                                err_row = {
-                                    "latitude": lat,
-                                    "longitude": lng,
-                                    "resolved_address": None,
-                                    "roof_label": None,
-                                    "roof_probability": None,
-                                    "roof_score": None,
-                                    "wide_label": None,
-                                    "wide_probability": None,
-                                    "wide_score": None,
-                                    "final_label": None,
-                                    "final_probability": None,
-                                    "mode": mode,
-                                    "error": str(e),
-                                }
-                                if name_col is not None:
-                                    err_row["name"] = row[name_col]
-                                results.append(err_row)
-
-                            progress.progress(idx / total)
-                            status.write(f"처리 중: {idx} / {total}")
-
-                        result_df = pd.DataFrame(results)
-
-                        # 컬럼 순서 정리
-                        preferred_cols = []
-                        if "name" in result_df.columns:
-                            preferred_cols.append("name")
-
-                        preferred_cols += [
-                            "latitude",
-                            "longitude",
-                            "resolved_address",
-                            "final_label",
-                            "final_probability",
-                            "roof_label",
-                            "roof_probability",
-                            "roof_score",
-                            "wide_label",
-                            "wide_probability",
-                            "wide_score",
-                            "mode",
-                            "error",
-                        ]
-
-                        existing_cols = [c for c in preferred_cols if c in result_df.columns]
-                        other_cols = [c for c in result_df.columns if c not in existing_cols]
-                        result_df = result_df[existing_cols + other_cols]
-
-                        st.success("일괄 분석 완료")
-                        st.dataframe(result_df, use_container_width=True)
-
-                        csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
-                        xlsx_bytes = dataframe_to_excel_bytes(result_df)
-
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.download_button(
-                                "결과 CSV 다운로드",
-                                data=csv_bytes,
-                                file_name="satellite_classifier_results.csv",
-                                mime="text/csv",
-                                use_container_width=True,
-                            )
-                        with c2:
-                            st.download_button(
-                                "결과 Excel 다운로드",
-                                data=xlsx_bytes,
-                                file_name="satellite_classifier_results.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                use_container_width=True,
-                            )
-
-    except Exception as e:
-        st.error(f"파일 처리 오류: {e}")
