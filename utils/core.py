@@ -5,7 +5,6 @@ PLAYWRIGHT_BROWSERS_PATH = os.getenv(
     "/home/adminuser/.cache/ms-playwright"
 )
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
 import sys
 import subprocess
