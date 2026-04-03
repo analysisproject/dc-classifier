@@ -418,6 +418,7 @@ class KakaoMapRenderer:
 
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(
+            channel="chromium",
             headless=True,
             args=[
                 "--no-sandbox",
