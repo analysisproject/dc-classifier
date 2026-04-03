@@ -225,6 +225,7 @@ with col3:
         roof_result = result["roof_result"]
         wide_result = result["wide_result"]
 
+        # 대표 판정은 항상 roof 기준
         final_prob = float(roof_result["probability"])
         final_label = roof_result["label"]
         roof_score = float(roof_result["score"])
@@ -239,13 +240,19 @@ with col3:
             roof_score_text = f"예측확률(score) {roof_score:.4f}"
 
         if final_label == "데이터센터":
-            st.success(f"판정: **{final_label}**")
+            st.success(f"대표 판정(roof 기준): **{final_label}**")
         else:
-            st.info(f"판정: **{final_label}**")
+            st.info(f"대표 판정(roof 기준): **{final_label}**")
 
         st.metric("roof 기준 데이터센터 확률", f"{final_prob * 100:.2f}%")
         st.write(f"**{roof_score_label}**: `{roof_score_display}`")
         st.write(f"**분류 모드**: `{roof_result['mode']}`")
+
+        st.markdown("---")
+        st.markdown("**세부 결과 비교**")
+
+        st.write(f"**roof 결과 라벨**: `{roof_result['label']}`")
+        st.write(f"**roof 기준 데이터센터 확률**: `{float(roof_result['probability']) * 100:.2f}%`")
 
         if wide_result is not None:
             wide_prob = float(wide_result["probability"])
@@ -267,7 +274,7 @@ with col3:
 
             st.markdown("**해석**")
             st.write(
-                f"최종 판정은 **roof view 결과**를 기준으로 했습니다. "
+                f"대표 판정은 **roof view 결과**를 기준으로 했습니다. "
                 f"roof 결과는 **{final_label}** 이고, "
                 f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
                 f"내부 판정값은 **{roof_score_text}** 입니다. "
@@ -276,9 +283,10 @@ with col3:
                 f"내부 판정값은 **{wide_score_text}** 입니다."
             )
         else:
+            st.warning("wide 결과가 없어 roof 기준 결과만 표시합니다.")
             st.markdown("**해석**")
             st.write(
-                f"최종 판정은 **roof view 단일 결과**를 기준으로 했습니다. "
+                f"대표 판정은 **roof view 결과**를 기준으로 했습니다. "
                 f"roof 결과는 **{final_label}** 이고, "
                 f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
                 f"내부 판정값은 **{roof_score_text}** 입니다."
