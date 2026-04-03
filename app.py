@@ -190,7 +190,7 @@ if st.session_state.get("run_analysis", False):
         }
 
     except Exception as e:
-        st.error(f"분석 중 오류: {e}")
+        st.exception(e)
 
     finally:
         # rerun 때 자동 재실행 방지
