@@ -1,10 +1,11 @@
+playwright
 streamlit
+open_clip_torch
+torch
+torchvision
+joblib
 pandas
 numpy
-pillow
-torch
-open-clip-torch
-joblib
 requests
-playwright
 openpyxl
+Pillow
