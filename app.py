@@ -372,9 +372,16 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 def start_server(directory: Path, host: str, port: int):
     handler = partial(QuietHandler, directory=str(directory))
+
     httpd = ThreadingHTTPServer((host, port), handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    httpd.allow_reuse_address = True   # 포트 재사용 허용
+
+    thread = threading.Thread(
+        target=httpd.serve_forever,
+        daemon=True
+    )
     thread.start()
+
     return httpd
 
 def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
@@ -409,7 +416,7 @@ def capture_kakao_satellite_http(
     width: int = 1600,
     height: int = 900,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int = 0,
 ) -> Dict[str, Image.Image]:
     if not js_key:
         raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
@@ -421,7 +428,9 @@ def capture_kakao_satellite_http(
         (tmpdir / "index.html").write_text(html, encoding="utf-8")
 
         httpd = start_server(tmpdir, host, port)
-        base_url = f"http://{host}:{port}/index.html"
+
+        actual_port = httpd.server_address[1]
+        base_url = f"http://{host}:{actual_port}/index.html"
 
         wide_path = tmpdir / f"wide_z{wide_level}.png"
         roof_path = tmpdir / f"roof_z{roof_level}.png"
@@ -472,16 +481,14 @@ def analyze_one_coordinate(
     """
     images = capture_kakao_satellite_http(
         js_key=js_key,
-        lat=lat,
-        lon=lng,
+        lat=st.session_state["lat"],
+        lon=st.session_state["lng"],
         wide_level=wide_level,
         roof_level=roof_level,
         map_type=map_type,
         width=1600,
         height=900,
-        host="127.0.0.1",
-        port=8000,
-    )
+    )    )
 
     wide_img = images["wide"]
     roof_img = images["roof"]
