@@ -434,7 +434,26 @@ def start_server(directory: Path, host: str, port: int):
     return httpd
 
 
-def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+def _attach_page_debug_handlers_once(page):
+    if getattr(page, "_debug_handlers_attached", False):
+        return
+
+    page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}"))
+    page.on("pageerror", lambda exc: print(f"[PAGEERROR] {exc}"))
+    setattr(page, "_debug_handlers_attached", True)
+
+
+def render_one(
+    page,
+    base_url: str,
+    lat: float,
+    lon: float,
+    level: int,
+    out_path: Path,
+    map_type: str,
+):
     params = urlencode({
         "lat": lat,
         "lon": lon,
@@ -443,16 +462,40 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
     })
     url = f"{base_url}?{params}"
 
-    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_function(
-        "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-        timeout=10000
-    )
-    page.wait_for_function("window.__MAP_READY__ === true", timeout=30000)
+    _attach_page_debug_handlers_once(page)
 
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+    # 1) Kakao SDK 자체 로딩 대기
+    page.wait_for_function(
+        """
+        () => {
+            return typeof window.kakao !== "undefined"
+                && typeof window.kakao.maps !== "undefined";
+        }
+        """,
+        timeout=60000,
+    )
+
+    # 2) map ready 플래그 대기
+    page.wait_for_function(
+        """
+        () => {
+            return window.__MAP_READY__ === true;
+        }
+        """,
+        timeout=60000,
+    )
+
+    # 3) JS 내부 에러 확인
     err = page.evaluate("window.__MAP_ERROR__")
     if err:
         raise RuntimeError(f"Kakao map render error: {err}")
+
+    # 4) map DOM이 실제로 보이는지 한 번 더 확인
+    box = page.locator("#map").bounding_box()
+    if box is None:
+        raise RuntimeError("지도가 렌더링되지 않았습니다. #map bounding box를 찾지 못했습니다.")
 
     page.locator("#map").screenshot(path=str(out_path))
 
