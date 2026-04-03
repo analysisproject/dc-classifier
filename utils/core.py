@@ -446,6 +446,7 @@ class KakaoMapRenderer:
 
 @st.cache_resource(show_spinner=False)
 def get_kakao_renderer(js_key: str, width: int = 896, height: int = 576):
+    ensure_playwright_browser()
     return KakaoMapRenderer(js_key=js_key, width=width, height=height)
 
 
