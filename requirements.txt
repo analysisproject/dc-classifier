@@ -1,6 +1,6 @@
 streamlit
 playwright
-open_clip_torch
+open-clip-torch
 torch
 torchvision
 joblib
