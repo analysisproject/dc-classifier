@@ -1,11 +1,13 @@
 import os
-
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/mount/src/dc-classifier/.playwright-browsers"
-
+import sys
 import subprocess
+from pathlib import Path
+
+PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
+
 import tempfile
 from io import BytesIO
-from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 import joblib
@@ -17,8 +19,6 @@ import streamlit as st
 import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
-
-PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_chromium_ready.flag")
 
 ARTIFACT_DIR = Path("artifacts")
 LINEARPROBE_PATH = ARTIFACT_DIR / "linearprobe.joblib"
