@@ -25,6 +25,9 @@ st.caption("GPS 또는 주소를 입력하면 위성사진을 불러오고 roof 
 
 js_key, rest_key, mode, map_type, wide_level, roof_level = render_shared_sidebar("Single Analysis")
 
+default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
+default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
+
 with st.sidebar:
 
     # 1️⃣ 페이지 선택 (맨 위)
