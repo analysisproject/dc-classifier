@@ -1,8 +1,8 @@
+import os
 import streamlit as st
 
 from utils.core import (
     init_single_session_state,
-    render_shared_sidebar,
     reverse_geocode,
     format_reverse_address,
     geocode_address,
@@ -30,39 +30,27 @@ st.caption("GPS 또는 주소를 입력하면 위성사진을 불러오고 roof 
 
 #js_key, rest_key, mode, map_type, wide_level, roof_level = render_shared_sidebar("Single Analysis")
 
-
 with st.sidebar:
-
-    # 1️⃣ 페이지 선택 (맨 위)
     st.page_link("app.py", label="Single Analysis", icon="🛰️")
-    st.page_link("pages/2_Batch_Excel_Analysis.py", label="Batch Excel Analysis", icon="📄")
+    st.page_link("pages/2_Batch_Excel_Analysis.py", label="File Upload(Excel, csv)", icon="📄")
 
     st.markdown("---")
 
-    # 2️⃣ 입력 방식
-    input_mode = st.radio(
-        "입력 방식",
-        ["GPS 입력", "주소 입력"],
-        index=0
-    )
+    input_mode = st.radio("입력 방식", ["GPS 입력", "주소 입력"], index=0)
 
     st.markdown("---")
 
-    # 3️⃣ API 키
     js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
     rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
 
     st.markdown("---")
 
-    # 4️⃣ 모델 옵션
-    mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"])
-    map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"])
-
+    mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
+    map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
     wide_level = st.slider("wide level", 0, 6, 2)
     roof_level = st.slider("roof level", 0, 6, 1)
 
     st.markdown("---")
-
     st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
     st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
 
