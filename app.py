@@ -22,8 +22,8 @@ st.set_page_config(
 
 init_single_session_state()
 
-default_js_key = get_secret_or_env("KAKAO_JS_KEY", "")
-default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "")
+default_js_key = os.getenv("KAKAO_JS_KEY", "")
+default_rest_key = os.getenv("KAKAO_REST_KEY", "")
 
 st.title("🛰️ Satellite Data Center Classifier")
 st.caption("GPS 또는 주소를 입력하면 위성사진을 불러오고 roof view 기준으로 데이터센터 여부를 판정합니다.")
