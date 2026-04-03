@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
-from urllib.parse import urlencode
 from typing import Optional, Tuple, Dict, Any, List
 from io import BytesIO
 
@@ -16,7 +15,7 @@ import requests
 import streamlit as st
 import torch
 from PIL import Image
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
 
 # ============================================================
@@ -54,7 +53,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>Skyview Capture</title>
+  <title>Kakao Skyview Capture</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     html, body {
@@ -76,29 +75,33 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="map"></div>
 
   <script>
-    function getParam(name, fallback) {
-      const url = new URL(window.location.href);
-      const v = url.searchParams.get(name);
-      return v === null ? fallback : v;
-    }
-
-    const lat = parseFloat(getParam("lat", "37.5665"));
-    const lon = parseFloat(getParam("lon", "126.9780"));
-    const level = parseInt(getParam("level", "2"), 10);
-    const mapType = getParam("mapType", "SKYVIEW");
-
     window.__MAP_READY__ = false;
     window.__MAP_ERROR__ = null;
+    window.__MAP_OBJ__ = null;
+    window.__READY_TIMER__ = null;
 
-    kakao.maps.load(function () {
+    function markReadyDelayed(ms = 400) {
+      if (window.__READY_TIMER__) {
+        clearTimeout(window.__READY_TIMER__);
+      }
+      window.__READY_TIMER__ = setTimeout(() => {
+        window.__MAP_READY__ = true;
+      }, ms);
+    }
+
+    function applyMapState(lat, lon, level, mapType) {
       try {
-        const container = document.getElementById("map");
-        const options = {
-          center: new kakao.maps.LatLng(lat, lon),
-          level: level
-        };
+        if (!window.__MAP_OBJ__) {
+          throw new Error("Map object not initialized");
+        }
 
-        const map = new kakao.maps.Map(container, options);
+        window.__MAP_READY__ = false;
+
+        const map = window.__MAP_OBJ__;
+        const center = new kakao.maps.LatLng(lat, lon);
+
+        map.setCenter(center);
+        map.setLevel(level);
 
         if (mapType === "SKYVIEW") {
           map.setMapTypeId(kakao.maps.MapTypeId.SKYVIEW);
@@ -108,26 +111,36 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           map.setMapTypeId(kakao.maps.MapTypeId.ROADMAP);
         }
 
+        markReadyDelayed(400);
+      } catch (e) {
+        window.__MAP_ERROR__ = String(e);
+      }
+    }
+
+    kakao.maps.load(function () {
+      try {
+        const container = document.getElementById("map");
+        const options = {
+          center: new kakao.maps.LatLng(37.5665, 126.9780),
+          level: 2
+        };
+
+        const map = new kakao.maps.Map(container, options);
+        map.setMapTypeId(kakao.maps.MapTypeId.SKYVIEW);
         map.setDraggable(false);
         map.setZoomable(false);
 
-        const markerPosition = new kakao.maps.LatLng(lat, lon);
-        const marker = new kakao.maps.Marker({ position: markerPosition });
-        marker.setMap(map);
+        window.__MAP_OBJ__ = map;
 
-        let fired = false;
-        function markReadyOnce() {
-          if (fired) return;
-          fired = true;
-          setTimeout(() => {
-            window.__MAP_READY__ = true;
-          }, 1500);
-        }
+        kakao.maps.event.addListener(map, "tilesloaded", function () {
+          markReadyDelayed(300);
+        });
 
-        kakao.maps.event.addListener(map, "tilesloaded", markReadyOnce);
-        kakao.maps.event.addListener(map, "idle", markReadyOnce);
+        kakao.maps.event.addListener(map, "idle", function () {
+          markReadyDelayed(300);
+        });
 
-        setTimeout(markReadyOnce, 7000);
+        markReadyDelayed(500);
 
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
@@ -211,29 +224,6 @@ def detect_lat_lng_name_columns(df: pd.DataFrame):
 
 def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
-
-
-# ============================================================
-# Sidebar helper
-# ============================================================
-def render_shared_sidebar(page_title: str):
-    default_js_key = get_secret_or_env("KAKAO_JS_KEY", "") or ""
-    default_rest_key = get_secret_or_env("KAKAO_REST_KEY", "") or ""
-
-    with st.sidebar:
-        st.header(page_title)
-        js_key = st.text_input("JavaScript Key", value=default_js_key, type="password")
-        rest_key = st.text_input("REST API Key", value=default_rest_key, type="password")
-        mode = st.selectbox("분류 모드", ["zeroshot", "centroid", "linearprobe"], index=0)
-        map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
-        wide_level = st.slider("wide level", 0, 6, 2)
-        roof_level = st.slider("roof level", 0, 6, 1)
-
-        st.markdown("---")
-        st.write(f"linearprobe.joblib: {'있음' if LINEARPROBE_PATH.exists() else '없음'}")
-        st.write(f"centroids.npz: {'있음' if CENTROIDS_PATH.exists() else '없음'}")
-
-    return js_key, rest_key, mode, map_type, wide_level, roof_level
 
 
 # ============================================================
@@ -387,7 +377,7 @@ def classify_pil_image(
 
 
 # ============================================================
-# Kakao Local API
+# Kakao Local API helpers
 # ============================================================
 def get_auth_headers(rest_key: str) -> Dict[str, str]:
     if not rest_key or not rest_key.strip():
@@ -444,7 +434,7 @@ def format_reverse_address(doc: Optional[dict]) -> str:
 
 
 # ============================================================
-# Local HTTP server for Kakao rendering
+# Local HTTP server
 # ============================================================
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -456,51 +446,126 @@ def start_server(directory: Path, host: str, port: int):
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.allow_reuse_address = True
 
-    thread = threading.Thread(
-        target=httpd.serve_forever,
-        daemon=True
-    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd
 
 
-def _attach_page_debug_handlers_once(page):
-    if getattr(page, "_debug_handlers_attached", False):
-        return
+# ============================================================
+# Kakao renderer (fast reusable)
+# ============================================================
+class KakaoMapRenderer:
+    def __init__(
+        self,
+        js_key: str,
+        width: int = 1024,
+        height: int = 640,
+        host: str = "127.0.0.1",
+        port: int = 0,
+    ):
+        if not js_key:
+            raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
 
-    page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}"))
-    page.on("pageerror", lambda exc: print(f"[PAGEERROR] {exc}"))
-    setattr(page, "_debug_handlers_attached", True)
+        self.js_key = js_key
+        self.width = width
+        self.height = height
+        self.host = host
+        self.port = port
+
+        self.tmpdir_obj = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self.tmpdir_obj.name)
+
+        html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
+        (self.tmpdir / "index.html").write_text(html, encoding="utf-8")
+
+        self.httpd = start_server(self.tmpdir, host, port)
+        actual_port = self.httpd.server_address[1]
+        self.base_url = f"http://{host}:{actual_port}/index.html"
+
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-setuid-sandbox",
+            ],
+        )
+        self.context = self.browser.new_context(
+            viewport={"width": width, "height": height},
+            device_scale_factor=1,
+        )
+        self.page = self.context.new_page()
+
+        self.page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+        self.page.wait_for_function(
+            """
+            () => {
+                return typeof window.kakao !== "undefined"
+                    && typeof window.kakao.maps !== "undefined"
+                    && window.__MAP_OBJ__ !== null;
+            }
+            """,
+            timeout=30000,
+        )
+
+    def render_to_path(self, lat: float, lon: float, level: int, out_path: Path, map_type: str = "SKYVIEW"):
+        self.page.evaluate(
+            """
+            ([lat, lon, level, mapType]) => {
+                window.__MAP_ERROR__ = null;
+                window.applyMapState(lat, lon, level, mapType);
+            }
+            """,
+            [lat, lon, level, map_type],
+        )
+
+        self.page.wait_for_function(
+            "() => window.__MAP_READY__ === true",
+            timeout=12000,
+        )
+
+        err = self.page.evaluate("window.__MAP_ERROR__")
+        if err:
+            raise RuntimeError(f"Kakao map render error: {err}")
+
+        box = self.page.locator("#map").bounding_box()
+        if box is None:
+            raise RuntimeError("지도가 렌더링되지 않았습니다. #map bounding box를 찾지 못했습니다.")
+
+        self.page.locator("#map").screenshot(path=str(out_path))
+
+    def close(self):
+        try:
+            self.context.close()
+        except Exception:
+            pass
+        try:
+            self.browser.close()
+        except Exception:
+            pass
+        try:
+            self.playwright.stop()
+        except Exception:
+            pass
+        try:
+            self.httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            self.httpd.server_close()
+        except Exception:
+            pass
+        try:
+            self.tmpdir_obj.cleanup()
+        except Exception:
+            pass
 
 
-def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path: Path, map_type: str):
-    params = urlencode({
-        "lat": lat,
-        "lon": lon,
-        "level": level,
-        "mapType": map_type,
-    })
-    url = f"{base_url}?{params}"
-
-    _attach_page_debug_handlers_once(page)
-
-    page.goto(url, wait_until="domcontentloaded", timeout=45000)
-
-    page.wait_for_function(
-        "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-        timeout=45000
-    )
-
-    page.wait_for_function(
-        "window.__MAP_READY__ === true",
-        timeout=45000
-    )
-
-    err = page.evaluate("window.__MAP_ERROR__")
-    if err:
-        raise RuntimeError(f"Kakao map render error: {err}")
-
-    page.locator("#map").screenshot(path=str(out_path))
+@st.cache_resource(show_spinner=False)
+def get_kakao_renderer(js_key: str, width: int = 1024, height: int = 640):
+    return KakaoMapRenderer(js_key=js_key, width=width, height=height)
 
 
 def _open_rgb_image(path: Path) -> Image.Image:
@@ -515,152 +580,38 @@ def capture_kakao_satellite_http(
     wide_level: int = 2,
     roof_level: int = 1,
     map_type: str = "SKYVIEW",
-    width: int = 1600,
-    height: int = 900,
-    host: str = "127.0.0.1",
-    port: int = 0,
-    max_retries: int = 2,
+    width: int = 1024,
+    height: int = 640,
+    capture_wide: bool = False,
 ) -> Dict[str, Image.Image]:
-    if not js_key:
-        raise RuntimeError("KAKAO_JS_KEY가 없습니다.")
+    renderer = get_kakao_renderer(js_key=js_key, width=width, height=height)
 
-    last_error = None
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
 
-    for attempt in range(1, max_retries + 1):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmpdir = Path(tmp)
+        roof_path = tmpdir / f"roof_z{roof_level}.png"
+        wide_path = tmpdir / f"wide_z{wide_level}.png"
 
-            html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
-            (tmpdir / "index.html").write_text(html, encoding="utf-8")
-
-            httpd = start_server(tmpdir, host, port)
-            actual_port = httpd.server_address[1]
-            base_url = f"http://{host}:{actual_port}/index.html"
-
-            wide_path = tmpdir / f"wide_z{wide_level}.png"
-            roof_path = tmpdir / f"roof_z{roof_level}.png"
-
-            try:
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(
-                        headless=True,
-                        args=["--no-sandbox", "--disable-dev-shm-usage"]
-                    )
-                    context = browser.new_context(
-                        viewport={"width": width, "height": height},
-                        device_scale_factor=1,
-                    )
-                    page = context.new_page()
-
-                    render_one(page, base_url, lat, lon, wide_level, wide_path, map_type)
-                    render_one(page, base_url, lat, lon, roof_level, roof_path, map_type)
-
-                    context.close()
-                    browser.close()
-
-                return {
-                    "wide": _open_rgb_image(wide_path),
-                    "roof": _open_rgb_image(roof_path),
-                }
-
-            except PlaywrightTimeoutError as e:
-                last_error = RuntimeError(
-                    f"Kakao 지도 렌더링 시간 초과(attempt {attempt}/{max_retries}). "
-                    f"좌표=({lat}, {lon}), wide_level={wide_level}, roof_level={roof_level}, map_type={map_type}"
-                )
-            except Exception as e:
-                last_error = e
-            finally:
-                try:
-                    httpd.shutdown()
-                finally:
-                    httpd.server_close()
-
-    raise RuntimeError(f"위성사진 캡처 실패: {last_error}")
-
-
-# ============================================================
-# Batch helpers
-# ============================================================
-def analyze_one_coordinate(
-    js_key: str,
-    rest_key: Optional[str],
-    lat: float,
-    lng: float,
-    mode: str,
-    map_type: str,
-    wide_level: int,
-    roof_level: int,
-    model,
-    preprocess,
-    tokenizer,
-    device: str,
-    artifacts: Dict[str, Any],
-    compute_wide: bool = True,
-) -> Dict[str, Any]:
-    images = capture_kakao_satellite_http(
-        js_key=js_key,
-        lat=lat,
-        lon=lng,
-        wide_level=wide_level,
-        roof_level=roof_level,
-        map_type=map_type,
-        width=1600,
-        height=900,
-    )
-
-    roof_img = images["roof"]
-    roof_result = classify_pil_image(
-        pil_img=roof_img,
-        mode=mode,
-        model=model,
-        preprocess=preprocess,
-        tokenizer=tokenizer,
-        device=device,
-        artifacts=artifacts,
-    )
-
-    wide_result = None
-    if compute_wide:
-        wide_img = images["wide"]
-        wide_result = classify_pil_image(
-            pil_img=wide_img,
-            mode=mode,
-            model=model,
-            preprocess=preprocess,
-            tokenizer=tokenizer,
-            device=device,
-            artifacts=artifacts,
+        renderer.render_to_path(
+            lat=lat,
+            lon=lon,
+            level=roof_level,
+            out_path=roof_path,
+            map_type=map_type,
         )
 
-    address_text = None
-    if rest_key:
-        try:
-            rev = reverse_geocode(rest_key, lat, lng)
-            address_text = format_reverse_address(rev)
-        except Exception:
-            address_text = None
+        result = {
+            "roof": _open_rgb_image(roof_path)
+        }
 
-    row = {
-        "latitude": lat,
-        "longitude": lng,
-        "resolved_address": address_text,
-        "roof_label": roof_result["label"],
-        "roof_probability": float(roof_result["probability"]),
-        "roof_score": float(roof_result["score"]),
-        "final_label": roof_result["label"],
-        "final_probability": float(roof_result["probability"]),
-        "mode": mode,
-        "error": None,
-    }
+        if capture_wide:
+            renderer.render_to_path(
+                lat=lat,
+                lon=lon,
+                level=wide_level,
+                out_path=wide_path,
+                map_type=map_type,
+            )
+            result["wide"] = _open_rgb_image(wide_path)
 
-    if compute_wide and wide_result is not None:
-        row["wide_label"] = wide_result["label"]
-        row["wide_probability"] = float(wide_result["probability"])
-        row["wide_score"] = float(wide_result["score"])
-    else:
-        row["wide_label"] = None
-        row["wide_probability"] = None
-        row["wide_score"] = None
-
-    return row
+        return result
