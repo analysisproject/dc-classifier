@@ -168,6 +168,7 @@ def ensure_playwright_browser() -> None:
                 "playwright",
                 "install",
                 "--with-deps",
+                "--only-shell",
                 "chromium",
             ],
             check=False,
