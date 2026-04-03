@@ -2,7 +2,7 @@ import os
 
 PLAYWRIGHT_BROWSERS_PATH = os.getenv(
     "PLAYWRIGHT_BROWSERS_PATH",
-    "/home/adminuser/.cache/ms-playwright"
+    str(Path(tempfile.gettempdir()) / "ms-playwright")
 )
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
