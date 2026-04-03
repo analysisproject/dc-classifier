@@ -528,3 +528,79 @@ def capture_kakao_satellite_http(
 
     return result
 
+# ===============================
+# Batch Excel Analysis helpers
+# ===============================
+
+import pandas as pd
+
+
+def read_excel_coordinates(file):
+    """
+    Excel에서 lat/lng 컬럼을 읽어온다
+    """
+    df = pd.read_excel(file)
+
+    if "lat" not in df.columns or "lng" not in df.columns:
+        raise ValueError("Excel에는 lat, lng 컬럼이 필요합니다.")
+
+    return df
+
+
+def process_batch_excel(
+    df,
+    js_key,
+    mode,
+    model,
+    preprocess,
+    tokenizer,
+    device,
+    artifacts,
+    width=1024,
+    height=768,
+    roof_level=1,
+    wide_level=2,
+):
+    """
+    여러 좌표를 batch로 분석
+    """
+
+    results = []
+
+    for _, row in df.iterrows():
+
+        images = capture_kakao_satellite_http(
+            js_key=js_key,
+            lat=row["lat"],
+            lon=row["lng"],
+            roof_level=roof_level,
+            wide_level=wide_level,
+            width=width,
+            height=height,
+            capture_wide=True,
+        )
+
+        roof_img = images["roof"]
+
+        res = classify_pil_image(
+            pil_img=roof_img,
+            mode=mode,
+            model=model,
+            preprocess=preprocess,
+            tokenizer=tokenizer,
+            device=device,
+            artifacts=artifacts,
+        )
+
+        results.append(
+            {
+                "lat": row["lat"],
+                "lng": row["lng"],
+                "label": res["label"],
+                "probability": res["probability"],
+                "score": res["score"],
+            }
+        )
+
+    return pd.DataFrame(results)
+    
