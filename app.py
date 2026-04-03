@@ -488,7 +488,7 @@ def analyze_one_coordinate(
         map_type=map_type,
         width=1600,
         height=900,
-    )    )
+    )    
 
     wide_img = images["wide"]
     roof_img = images["roof"]
