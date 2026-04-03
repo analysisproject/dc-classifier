@@ -181,7 +181,8 @@ def ensure_playwright_browser() -> None:
     print(result.stdout)
     print("[PLAYWRIGHT INSTALL STDERR]")
     print(result.stderr)
-
+    
+    print("[PLAYWRIGHT_BROWSERS_PATH]", PLAYWRIGHT_BROWSERS_PATH)
     print("[PLAYWRIGHT BROWSER ROOT]", browser_root)
     print("[PLAYWRIGHT EXISTING FILES]")
     for p in browser_root.glob("**/*"):
