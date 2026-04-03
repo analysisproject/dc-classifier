@@ -1,4 +1,7 @@
 import os
+
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/mount/src/dc-classifier/.playwright-browsers"
+
 import subprocess
 import tempfile
 from io import BytesIO
@@ -146,19 +149,37 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 """
 
 
+import sys
+
+PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
+
+
 def ensure_playwright_browser() -> None:
-    if PLAYWRIGHT_READY_FLAG.exists():
+    browser_dir = Path(PLAYWRIGHT_BROWSERS_PATH)
+    if browser_dir.exists() and any(browser_dir.iterdir()):
         return
 
     try:
         result = subprocess.run(
-            ["python", "-m", "playwright", "install", "chromium"],
+            [
+                sys.executable,
+                "-m",
+                "playwright",
+                "install",
+                "--with-deps",
+                "chromium",
+            ],
             check=False,
             capture_output=True,
             text=True,
+            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": PLAYWRIGHT_BROWSERS_PATH},
         )
-        if result.returncode == 0:
-            PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
+        if result.returncode != 0:
+            print("[PLAYWRIGHT INSTALL STDOUT]")
+            print(result.stdout)
+            print("[PLAYWRIGHT INSTALL STDERR]")
+            print(result.stderr)
     except Exception as e:
         print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
 
