@@ -1,5 +1,5 @@
-playwright
 streamlit
+playwright
 open_clip_torch
 torch
 torchvision
