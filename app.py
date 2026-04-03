@@ -41,8 +41,17 @@ with st.sidebar:
     map_type = st.selectbox("지도 타입", ["SKYVIEW", "HYBRID"], index=0)
 
     show_wide = st.checkbox("wide view도 함께 렌더링", value=False)
-    image_width = st.select_slider("이미지 너비", options=[768, 896, 1024], value=896)
-    image_height = st.select_slider("이미지 높이", options=[512, 576, 640], value=576)
+
+    image_width = st.select_slider(
+        "이미지 너비",
+        options=[768, 896, 1024],
+        value=896,
+    )
+    image_height = st.select_slider(
+        "이미지 높이",
+        options=[512, 576, 640],
+        value=576,
+    )
 
     wide_level = st.slider("wide level", 0, 6, 2)
     roof_level = st.slider("roof level", 0, 6, 1)
@@ -55,8 +64,6 @@ col1, col2, col3 = st.columns([0.9, 1.05, 1.05], gap="large")
 
 with col1:
     st.subheader("1) 위치 입력")
-
-    run_clicked = False
 
     if input_mode == "GPS 입력":
         lat_text = st.text_input("위도 (Latitude)", value=f"{st.session_state['lat']:.6f}")
@@ -71,7 +78,6 @@ with col1:
                 st.session_state["lng"] = lng
                 st.session_state["resolved_text"] = "GPS 좌표 입력"
                 st.session_state["run_analysis"] = True
-                run_clicked = True
 
                 if rest_key:
                     rev = reverse_geocode(rest_key, lat, lng)
@@ -109,7 +115,6 @@ with col1:
                         st.session_state["resolved_meta"] = meta
                         st.session_state["resolved_address_str"] = meta.get("address_name", address.strip())
                         st.session_state["run_analysis"] = True
-                        run_clicked = True
                 except Exception as e:
                     st.session_state["run_analysis"] = False
                     st.error(f"주소 검색 오류: {e}")
@@ -117,16 +122,23 @@ with col1:
     st.markdown("---")
     st.subheader("2) 현재 선택 위치")
     st.write(f"**위도 / 경도**: {st.session_state['lat']:.6f}, {st.session_state['lng']:.6f}")
+
     if st.session_state.get("resolved_text"):
         st.write(f"**입력값**: {st.session_state['resolved_text']}")
+
     if st.session_state.get("resolved_address_str"):
         st.write(f"**주소**: {st.session_state['resolved_address_str']}")
+
     if st.session_state.get("resolved_meta") is not None:
         with st.expander("상세 위치 정보", expanded=False):
             st.json(st.session_state["resolved_meta"], expanded=False)
 
+# 실제 분석은 버튼 눌렀을 때만 수행
 if st.session_state.get("run_analysis", False):
     try:
+        if not js_key:
+            raise RuntimeError("JavaScript Key가 필요합니다.")
+
         with st.spinner("위성사진 렌더링 중..."):
             images = capture_kakao_satellite_http(
                 js_key=js_key,
@@ -174,21 +186,27 @@ if st.session_state.get("run_analysis", False):
             "wide_img": wide_img,
             "roof_result": roof_result,
             "wide_result": wide_result,
+            "mode": mode,
         }
-        st.session_state["run_analysis"] = False
 
     except Exception as e:
         st.error(f"분석 중 오류: {e}")
+
+    finally:
+        # rerun 때 자동 재실행 방지
+        st.session_state["run_analysis"] = False
 
 result = st.session_state.get("last_result")
 
 with col2:
     st.subheader("3) 위성 사진")
+
     if result is None:
         st.info("위치 확인 및 분석 버튼을 누르면 여기에서 위성 사진이 생성됩니다.")
     else:
         st.markdown("**roof view**")
         st.image(result["roof_img"], use_container_width=True)
+
         if result["wide_img"] is not None:
             st.markdown("**wide view**")
             st.image(result["wide_img"], use_container_width=True)
@@ -242,10 +260,29 @@ with col3:
             st.write(f"**wide 기준 데이터센터 확률**: `{wide_prob * 100:.2f}%`")
             st.write(f"**{wide_score_label}**: `{wide_score_display}`")
 
-        st.markdown("**해석**")
-        st.write(
-            f"최종 판정은 **roof view 결과**를 기준으로 했습니다. "
-            f"roof 결과는 **{final_label}**, "
-            f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
-            f"내부 판정값은 **{roof_score_text}** 입니다."
-        )
+            st.markdown("**해석**")
+            st.write(
+                f"최종 판정은 **roof view 결과**를 기준으로 했습니다. "
+                f"roof 결과는 **{final_label}** 이고, "
+                f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
+                f"내부 판정값은 **{roof_score_text}** 입니다. "
+                f"wide 결과는 **{wide_label}**, "
+                f"wide 기준 데이터센터 확률은 **{wide_prob:.4f}**, "
+                f"내부 판정값은 **{wide_score_text}** 입니다."
+            )
+        else:
+            st.markdown("**해석**")
+            st.write(
+                f"최종 판정은 **roof view 단일 결과**를 기준으로 했습니다. "
+                f"roof 결과는 **{final_label}** 이고, "
+                f"roof 기준 데이터센터 확률은 **{final_prob:.4f}**, "
+                f"내부 판정값은 **{roof_score_text}** 입니다."
+            )
+
+        with st.expander("score 계산 방식 설명", expanded=False):
+            if roof_result["mode"] == "zeroshot":
+                st.write("zeroshot에서는 score = 가장 높은 positive prompt 유사도 - 가장 높은 negative prompt 유사도 입니다.")
+            elif roof_result["mode"] == "centroid":
+                st.write("centroid에서는 score = positive centroid 유사도 - negative centroid 유사도 입니다.")
+            else:
+                st.write("linearprobe에서는 score를 predict_proba(데이터센터 확률)와 동일하게 사용했습니다.")
