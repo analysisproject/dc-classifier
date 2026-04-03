@@ -155,9 +155,13 @@ if st.session_state.get("run_analysis", False):
         roof_img = images["roof"]
         wide_img = images.get("wide")
 
-        with st.spinner("모델 분석 중..."):
+       with st.spinner("모델 분석 중..."):
             model, preprocess, tokenizer, device = load_clip_model()
-            artifacts = load_artifacts()
+        
+            if mode in ["linearprobe", "centroid"]:
+                artifacts = load_artifacts()
+            else:
+                artifacts = {}
 
             roof_result = classify_pil_image(
                 pil_img=roof_img,
