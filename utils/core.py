@@ -2,24 +2,31 @@ import os
 import subprocess
 from pathlib import Path
 
-PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_installed.flag")
+PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_chromium_ready.flag")
 
 def ensure_playwright_browser():
     if PLAYWRIGHT_READY_FLAG.exists():
         return
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["python", "-m", "playwright", "install", "chromium"],
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
-        PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
-    except Exception:
-        pass
+        if result.returncode == 0:
+            PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
+        else:
+            print("[PLAYWRIGHT INSTALL STDOUT]")
+            print(result.stdout)
+            print("[PLAYWRIGHT INSTALL STDERR]")
+            print(result.stderr)
+    except Exception as e:
+        print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
 
 ensure_playwright_browser()
+
 import threading
 import tempfile
 from pathlib import Path
