@@ -1,13 +1,14 @@
 import os
+
+PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
+
 import sys
 import subprocess
 import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
-
-PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
 import joblib
 import numpy as np
