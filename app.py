@@ -17,13 +17,55 @@ import streamlit as st
 import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
+import shutil
+import subprocess
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(
+def ensure_playwright_chromium():
+    """
+    Playwright용 Chromium 브라우저가 없으면 설치를 시도한다.
+    Streamlit Cloud / 리눅스 배포 환경에서 BrowserType.launch 오류를 줄이기 위한 안전장치.
+    """
+    cache_dir = Path.home() / ".cache" / "ms-playwright"
+
+    # 이미 설치 흔적이 있으면 통과
+    if cache_dir.exists() and any(cache_dir.iterdir()):
+        return
+
+    playwright_cmd = shutil.which("playwright")
+    if playwright_cmd is None:
+        raise RuntimeError(
+            "playwright CLI를 찾을 수 없습니다. requirements.txt에 playwright가 포함되어 있는지 확인하세요."
+        )
+
+    try:
+        subprocess.run(
+            [playwright_cmd, "install", "chromium"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            "Playwright Chromium 브라우저 설치에 실패했습니다. "
+            f"stderr: {e.stderr.strip()}"
+        ) from e
+
+def launch_playwright_browser(p):
+    """
+    컨테이너/클라우드 환경에서 비교적 안정적으로 Chromium 실행.
+    """
+    return p.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"]
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-setuid-sandbox",
+        ],
     )
-    page = browser.new_page()
+
+
 # ============================================================
 # Page config
 # ============================================================
@@ -406,12 +448,24 @@ def render_one(page, base_url: str, lat: float, lon: float, level: int, out_path
     })
     url = f"{base_url}?{params}"
 
-    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+    # Kakao SDK 로딩 확인
     page.wait_for_function(
-        "typeof kakao !== 'undefined' && typeof kakao.maps !== 'undefined'",
-        timeout=30000
+        """
+        () => typeof window.kakao !== 'undefined'
+           && typeof window.kakao.maps !== 'undefined'
+        """,
+        timeout=60000,
     )
-    page.wait_for_function("window.__MAP_READY__ === true", timeout=30000)
+
+    # 렌더 완료 또는 에러 중 하나라도 먼저 뜨면 진행
+    page.wait_for_function(
+        """
+        () => window.__MAP_READY__ === true || window.__MAP_ERROR__ !== null
+        """,
+        timeout=60000,
+    )
 
     err = page.evaluate("window.__MAP_ERROR__")
     if err:
@@ -449,11 +503,10 @@ def capture_kakao_satellite_http(
         roof_path = tmpdir / f"roof_z{roof_level}.png"
 
         try:
+            ensure_playwright_chromium()
+
             with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
-                )
+                browser = launch_playwright_browser(p)
                 context = browser.new_context(
                     viewport={"width": width, "height": height},
                     device_scale_factor=1,
