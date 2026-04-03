@@ -528,62 +528,127 @@ def capture_kakao_satellite_http(
 
     return result
 
-# ===============================
-# Batch Excel Analysis helpers
-# ===============================
-
 import pandas as pd
+import io
+import streamlit as st
 
 
-def read_excel_coordinates(file):
-    """
-    Excel에서 lat/lng 컬럼을 읽어온다
-    """
-    df = pd.read_excel(file)
+# =========================
+# Sidebar 공통 UI
+# =========================
+def render_shared_sidebar(title):
 
-    if "lat" not in df.columns or "lng" not in df.columns:
-        raise ValueError("Excel에는 lat, lng 컬럼이 필요합니다.")
+    with st.sidebar:
+        st.header("설정")
+
+        js_key = st.text_input("JavaScript Key", type="password")
+        rest_key = st.text_input("REST API Key", type="password")
+
+        mode = st.selectbox(
+            "분류 모드",
+            ["zeroshot", "centroid", "linearprobe"],
+            index=0
+        )
+
+        map_type = st.selectbox(
+            "지도 타입",
+            ["SKYVIEW", "HYBRID"],
+            index=0
+        )
+
+        wide_level = st.slider("wide level", 0, 6, 2)
+        roof_level = st.slider("roof level", 0, 6, 1)
+
+    return js_key, rest_key, mode, map_type, wide_level, roof_level
+
+
+# =========================
+# 파일 읽기
+# =========================
+def read_batch_file(uploaded_file):
+
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
 
     return df
 
 
-def process_batch_excel(
-    df,
+# =========================
+# 좌표 컬럼 자동 탐지
+# =========================
+def detect_lat_lng_name_columns(df):
+
+    lat_candidates = ["lat", "latitude", "위도"]
+    lng_candidates = ["lng", "lon", "longitude", "경도"]
+    name_candidates = ["name", "title", "site"]
+
+    lat_col = None
+    lng_col = None
+    name_col = None
+
+    for c in df.columns:
+        if c.lower() in lat_candidates:
+            lat_col = c
+        if c.lower() in lng_candidates:
+            lng_col = c
+        if c.lower() in name_candidates:
+            name_col = c
+
+    return lat_col, lng_col, name_col
+
+
+# =========================
+# 좌표 하나 분석
+# =========================
+def analyze_one_coordinate(
     js_key,
+    rest_key,
+    lat,
+    lng,
     mode,
+    map_type,
+    wide_level,
+    roof_level,
     model,
     preprocess,
     tokenizer,
     device,
     artifacts,
-    width=1024,
-    height=768,
-    roof_level=1,
-    wide_level=2,
+    compute_wide=True,
 ):
-    """
-    여러 좌표를 batch로 분석
-    """
 
-    results = []
+    images = capture_kakao_satellite_http(
+        js_key=js_key,
+        lat=lat,
+        lon=lng,
+        map_type=map_type,
+        wide_level=wide_level,
+        roof_level=roof_level,
+        width=1024,
+        height=768,
+        capture_wide=compute_wide,
+    )
 
-    for _, row in df.iterrows():
+    roof_img = images["roof"]
+    wide_img = images.get("wide")
 
-        images = capture_kakao_satellite_http(
-            js_key=js_key,
-            lat=row["lat"],
-            lon=row["lng"],
-            roof_level=roof_level,
-            wide_level=wide_level,
-            width=width,
-            height=height,
-            capture_wide=True,
-        )
+    roof_result = classify_pil_image(
+        pil_img=roof_img,
+        mode=mode,
+        model=model,
+        preprocess=preprocess,
+        tokenizer=tokenizer,
+        device=device,
+        artifacts=artifacts,
+    )
 
-        roof_img = images["roof"]
+    wide_result = None
 
-        res = classify_pil_image(
-            pil_img=roof_img,
+    if compute_wide and wide_img is not None:
+        wide_result = classify_pil_image(
+            pil_img=wide_img,
             mode=mode,
             model=model,
             preprocess=preprocess,
@@ -592,15 +657,36 @@ def process_batch_excel(
             artifacts=artifacts,
         )
 
-        results.append(
-            {
-                "lat": row["lat"],
-                "lng": row["lng"],
-                "label": res["label"],
-                "probability": res["probability"],
-                "score": res["score"],
-            }
-        )
+    result = {
+        "latitude": lat,
+        "longitude": lng,
+        "roof_label": roof_result["label"],
+        "roof_probability": roof_result["probability"],
+        "roof_score": roof_result["score"],
+        "mode": mode,
+    }
 
-    return pd.DataFrame(results)
-    
+    if wide_result is not None:
+        result.update({
+            "wide_label": wide_result["label"],
+            "wide_probability": wide_result["probability"],
+            "wide_score": wide_result["score"],
+        })
+
+    result["final_label"] = roof_result["label"]
+    result["final_probability"] = roof_result["probability"]
+
+    return result
+
+
+# =========================
+# Excel export
+# =========================
+def dataframe_to_excel_bytes(df):
+
+    buffer = io.BytesIO()
+
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False)
+
+    return buffer.getvalue()
