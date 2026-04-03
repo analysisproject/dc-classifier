@@ -1,4 +1,25 @@
 import os
+import subprocess
+from pathlib import Path
+
+PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_installed.flag")
+
+def ensure_playwright_browser():
+    if PLAYWRIGHT_READY_FLAG.exists():
+        return
+
+    try:
+        subprocess.run(
+            ["python", "-m", "playwright", "install", "chromium"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
+    except Exception:
+        pass
+
+ensure_playwright_browser()
 import threading
 import tempfile
 from pathlib import Path
@@ -17,20 +38,6 @@ import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-import subprocess
-import shutil
-
-def ensure_playwright_browser():
-    if shutil.which("playwright") is not None:
-        try:
-            subprocess.run(
-                ["playwright", "install", "chromium"],
-                check=False
-            )
-        except Exception:
-            pass
-
-ensure_playwright_browser()
 
 # ============================================================
 # Paths / constants
