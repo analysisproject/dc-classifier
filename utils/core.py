@@ -154,47 +154,58 @@ PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
 
+import sys
+
+PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
+
+
 def ensure_playwright_browser() -> None:
     browser_root = Path(PLAYWRIGHT_BROWSERS_PATH)
-    expected = list(browser_root.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
+    expected = list(
+        browser_root.glob(
+            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
+        )
+    )
 
-    # 실제 실행 파일이 있을 때만 설치 생략
     if any(p.exists() for p in expected):
         return
 
     browser_root.mkdir(parents=True, exist_ok=True)
 
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "playwright",
-                "install",
-                "--force",
-                "--with-deps",
-                "--only-shell",
-                "chromium",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": PLAYWRIGHT_BROWSERS_PATH},
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "--force",
+            "--with-deps",
+            "--only-shell",
+            "chromium",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": PLAYWRIGHT_BROWSERS_PATH},
+    )
+
+    print("[PLAYWRIGHT INSTALL STDOUT]")
+    print(result.stdout)
+    print("[PLAYWRIGHT INSTALL STDERR]")
+    print(result.stderr)
+
+    expected = list(
+        browser_root.glob(
+            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
         )
+    )
 
-        print("[PLAYWRIGHT INSTALL STDOUT]")
-        print(result.stdout)
-        print("[PLAYWRIGHT INSTALL STDERR]")
-        print(result.stderr)
-
-        expected = list(browser_root.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
-        if result.returncode != 0 or not any(p.exists() for p in expected):
-            raise RuntimeError(
-                "Playwright headless shell 설치가 완료되지 않았습니다. "
-                f"returncode={result.returncode}"
-            )
-    except Exception as e:
-        raise RuntimeError(f"Playwright browser 설치 실패: {e}")
+    if result.returncode != 0 or not any(p.exists() for p in expected):
+        raise RuntimeError(
+            "Playwright headless shell 설치가 완료되지 않았습니다. "
+            f"returncode={result.returncode}"
+        )
 
 
 
