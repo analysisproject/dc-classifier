@@ -399,9 +399,10 @@ class KakaoMapRenderer:
         html = HTML_TEMPLATE.replace("__KAKAO_JS_KEY__", js_key)
         (self.tmpdir / "index.html").write_text(html, encoding="utf-8")
 
+        ensure_playwright_browser()
+
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(
-            channel="chromium",
             headless=True,
             args=[
                 "--no-sandbox",
