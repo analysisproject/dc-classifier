@@ -1,6 +1,10 @@
 import os
 
-PLAYWRIGHT_BROWSERS_PATH = "/mount/src/dc-classifier/.playwright-browsers"
+PLAYWRIGHT_BROWSERS_PATH = os.getenv(
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "/home/adminuser/.cache/ms-playwright"
+)
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PLAYWRIGHT_BROWSERS_PATH
 
 import sys
@@ -178,6 +182,12 @@ def ensure_playwright_browser() -> None:
     print(result.stdout)
     print("[PLAYWRIGHT INSTALL STDERR]")
     print(result.stderr)
+
+    print("[PLAYWRIGHT BROWSER ROOT]", browser_root)
+    print("[PLAYWRIGHT EXISTING FILES]")
+    for p in browser_root.glob("**/*"):
+        if p.is_file():
+            print(str(p))
 
     expected = list(
         browser_root.glob("chromium-*/chrome-linux64/chrome")
@@ -404,6 +414,7 @@ class KakaoMapRenderer:
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(
             headless=True,
+            timeout=60000,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
@@ -416,12 +427,15 @@ class KakaoMapRenderer:
             device_scale_factor=1,
         )
         self.page = self.context.new_page()
-        self.page.goto((self.tmpdir / "index.html").as_uri(), wait_until="domcontentloaded", timeout=20000)
+        self.page.goto(
+            (self.tmpdir / "index.html").as_uri(),
+            wait_until="domcontentloaded",
+            timeout=60000
+        )
         self.page.wait_for_function(
             "() => typeof window.kakao !== 'undefined' && typeof window.kakao.maps !== 'undefined' && window.__MAP_OBJ__ !== null",
-            timeout=20000,
+            timeout=60000,
         )
-
     def render_to_pil(self, lat: float, lon: float, level: int, map_type: str = "SKYVIEW") -> Image.Image:
         self.page.evaluate(
             """
