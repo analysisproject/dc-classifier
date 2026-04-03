@@ -14,8 +14,8 @@ import streamlit as st
 import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
-
-
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from functools import partial
 # ============================================================
 # Paths / constants
 # ============================================================
