@@ -15,48 +15,14 @@ import torch
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-
-# ============================================================
-# Playwright install helper
-# ============================================================
 PLAYWRIGHT_READY_FLAG = Path("/tmp/playwright_chromium_ready.flag")
 
-
-def ensure_playwright_browser():
-    if PLAYWRIGHT_READY_FLAG.exists():
-        return
-
-    try:
-        result = subprocess.run(
-            ["python", "-m", "playwright", "install", "chromium"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
-        else:
-            print("[PLAYWRIGHT INSTALL STDOUT]")
-            print(result.stdout)
-            print("[PLAYWRIGHT INSTALL STDERR]")
-            print(result.stderr)
-    except Exception as e:
-        print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
-
-
-ensure_playwright_browser()
-
-
-# ============================================================
-# Paths / constants
-# ============================================================
 ARTIFACT_DIR = Path("artifacts")
 LINEARPROBE_PATH = ARTIFACT_DIR / "linearprobe.joblib"
 CENTROIDS_PATH = ARTIFACT_DIR / "centroids.npz"
 
 DEFAULT_MODEL_NAME = "ViT-B-32"
 DEFAULT_PRETRAINED = "openai"
-
 DEFAULT_LAT = 36.508393
 DEFAULT_LNG = 127.340573
 
@@ -102,20 +68,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
   <div id="map"></div>
-
   <script>
     window.__MAP_READY__ = false;
     window.__MAP_ERROR__ = null;
     window.__MAP_OBJ__ = null;
     window.__READY_TIMER__ = null;
 
-    function markReadyDelayed(ms = 600) {
+    function markReadyDelayed(ms) {
       if (window.__READY_TIMER__) {
         clearTimeout(window.__READY_TIMER__);
       }
-      window.__READY_TIMER__ = setTimeout(() => {
+      window.__READY_TIMER__ = setTimeout(function () {
         window.__MAP_READY__ = true;
-      }, ms);
+      }, ms || 600);
     }
 
     function applyMapState(lat, lon, level, mapType) {
@@ -141,7 +106,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           map.setMapTypeId(kakao.maps.MapTypeId.ROADMAP);
         }
 
-        // 타일 이벤트가 안 잡혀도 fallback으로 끝내기
         markReadyDelayed(1500);
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
@@ -171,9 +135,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           markReadyDelayed(500);
         });
 
-        // 초기 fallback
         markReadyDelayed(1500);
-
       } catch (e) {
         window.__MAP_ERROR__ = String(e);
       }
@@ -184,9 +146,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 """
 
 
-# ============================================================
-# General helpers
-# ============================================================
+def ensure_playwright_browser() -> None:
+    if PLAYWRIGHT_READY_FLAG.exists():
+        return
+
+    try:
+        result = subprocess.run(
+            ["python", "-m", "playwright", "install", "chromium"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            PLAYWRIGHT_READY_FLAG.touch(exist_ok=True)
+    except Exception as e:
+        print(f"[PLAYWRIGHT INSTALL ERROR] {e}")
+
+
+ensure_playwright_browser()
+
+
 def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     try:
         if key in st.secrets:
@@ -199,7 +178,6 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(key, default)
     if value is not None and str(value).strip():
         return str(value).strip()
-
     return default
 
 
@@ -217,55 +195,16 @@ def init_single_session_state() -> None:
             st.session_state[k] = v
 
 
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="results")
-    return output.getvalue()
-
-
-def read_batch_file(uploaded_file) -> pd.DataFrame:
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        return pd.read_excel(uploaded_file)
-    raise ValueError("지원하지 않는 파일 형식입니다. csv, xlsx만 가능합니다.")
-
-
-def detect_lat_lng_name_columns(df: pd.DataFrame):
-    normalized_cols = {c.lower().strip(): c for c in df.columns}
-
-    lat_col = (
-        normalized_cols.get("latitude")
-        or normalized_cols.get("lat")
-        or normalized_cols.get("y")
-    )
-    lng_col = (
-        normalized_cols.get("longitude")
-        or normalized_cols.get("lng")
-        or normalized_cols.get("lon")
-        or normalized_cols.get("long")
-        or normalized_cols.get("x")
-    )
-    name_col = normalized_cols.get("name")
-
-    return lat_col, lng_col, name_col
-
-
 def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-# ============================================================
-# Model helpers
-# ============================================================
 @st.cache_resource(show_spinner=True)
 def load_clip_model(model_name: str = DEFAULT_MODEL_NAME, pretrained: str = DEFAULT_PRETRAINED):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, _, preprocess = open_clip.create_model_and_transforms(
         model_name,
-        pretrained=pretrained
+        pretrained=pretrained,
     )
     tokenizer = open_clip.get_tokenizer(model_name)
     model = model.to(device)
@@ -327,22 +266,11 @@ def classify_pil_image(
     if mode == "linearprobe":
         if "linearprobe" not in artifacts:
             raise RuntimeError("artifacts/linearprobe.joblib 파일이 없습니다.")
-
         clf = artifacts["linearprobe"]
         proba = float(clf.predict_proba(img_emb.reshape(1, -1))[0, 1])
-
         result["score"] = proba
         result["probability"] = proba
         result["label"] = "데이터센터" if proba >= 0.5 else "비데이터센터"
-        result["details"] = {
-            "predict_proba_positive": proba,
-            "decision_threshold": 0.5,
-        }
-        result["reason_text"] = (
-            f"Linear probe가 데이터센터 확률을 {proba:.4f}로 추정했습니다. "
-            f"기준값 0.5 {'이상' if proba >= 0.5 else '미만'}이므로 "
-            f"{'데이터센터' if proba >= 0.5 else '비데이터센터'}로 판정했습니다."
-        )
         return result
 
     if mode == "centroid":
@@ -351,7 +279,6 @@ def classify_pil_image(
 
         pos_cent = artifacts["pos_centroid"]
         neg_cent = artifacts["neg_centroid"]
-
         pos_cent = pos_cent / (np.linalg.norm(pos_cent) + 1e-9)
         neg_cent = neg_cent / (np.linalg.norm(neg_cent) + 1e-9)
 
@@ -363,16 +290,6 @@ def classify_pil_image(
         result["score"] = score
         result["probability"] = prob
         result["label"] = "데이터센터" if score > 0 else "비데이터센터"
-        result["details"] = {
-            "sim_pos_centroid": sim_pos,
-            "sim_neg_centroid": sim_neg,
-            "margin": score,
-        }
-        result["reason_text"] = (
-            f"positive centroid 유사도={sim_pos:.4f}, "
-            f"negative centroid 유사도={sim_neg:.4f}, "
-            f"margin={score:.4f} 입니다."
-        )
         return result
 
     text_emb_pos = encode_texts(model, tokenizer, POS_PROMPTS, device)
@@ -392,24 +309,9 @@ def classify_pil_image(
     result["score"] = score
     result["probability"] = prob
     result["label"] = "데이터센터" if score > 0 else "비데이터센터"
-    result["details"] = {
-        "best_positive_prompt": POS_PROMPTS[pos_idx],
-        "best_positive_similarity": pos_max,
-        "best_negative_prompt": NEG_PROMPTS[neg_idx],
-        "best_negative_similarity": neg_max,
-        "margin": score,
-    }
-    result["reason_text"] = (
-        f"최고 positive prompt='{POS_PROMPTS[pos_idx]}' ({pos_max:.4f}), "
-        f"최고 negative prompt='{NEG_PROMPTS[neg_idx]}' ({neg_max:.4f}), "
-        f"margin={score:.4f} 입니다."
-    )
     return result
 
 
-# ============================================================
-# Kakao Local API helpers
-# ============================================================
 def get_auth_headers(rest_key: str) -> Dict[str, str]:
     if not rest_key or not rest_key.strip():
         raise ValueError("REST API Key가 비어 있습니다.")
@@ -421,7 +323,6 @@ def geocode_address(rest_key: str, query: str) -> Optional[Tuple[float, float, d
     headers = get_auth_headers(rest_key)
     params = {"query": query}
     r = requests.get(url, headers=headers, params=params, timeout=20)
-
     if r.status_code == 403:
         raise RuntimeError("주소 검색이 403으로 거부되었습니다. REST API Key와 Kakao 설정을 확인하세요.")
     r.raise_for_status()
@@ -442,7 +343,6 @@ def reverse_geocode(rest_key: str, lat: float, lng: float) -> Optional[dict]:
     headers = get_auth_headers(rest_key)
     params = {"x": lng, "y": lat}
     r = requests.get(url, headers=headers, params=params, timeout=20)
-
     if r.status_code == 403:
         raise RuntimeError("좌표→주소 변환이 403으로 거부되었습니다. REST API Key와 Kakao 설정을 확인하세요.")
     r.raise_for_status()
@@ -464,15 +364,8 @@ def format_reverse_address(doc: Optional[dict]) -> str:
     return "주소를 찾지 못했습니다."
 
 
-# ============================================================
-# Kakao Renderer
-# ============================================================
 class KakaoMapRenderer:
     def __init__(self, js_key: str, width: int = 896, height: int = 576):
-        self.js_key = js_key
-        self.width = width
-        self.height = height
-
         self.tmpdir_obj = tempfile.TemporaryDirectory()
         self.tmpdir = Path(self.tmpdir_obj.name)
 
@@ -494,7 +387,6 @@ class KakaoMapRenderer:
             device_scale_factor=1,
         )
         self.page = self.context.new_page()
-
         self.page.goto((self.tmpdir / "index.html").as_uri(), wait_until="domcontentloaded", timeout=20000)
         self.page.wait_for_function(
             "() => typeof window.kakao !== 'undefined' && typeof window.kakao.maps !== 'undefined' && window.__MAP_OBJ__ !== null",
@@ -510,7 +402,6 @@ class KakaoMapRenderer:
             """,
             [lat, lon, level, map_type],
         )
-
         self.page.wait_for_function(
             "() => window.__MAP_READY__ === true || window.__MAP_ERROR__ !== null",
             timeout=12000,
@@ -522,24 +413,6 @@ class KakaoMapRenderer:
 
         png_bytes = self.page.locator("#map").screenshot(type="png")
         return Image.open(BytesIO(png_bytes)).convert("RGB")
-
-    def close(self):
-        try:
-            self.context.close()
-        except Exception:
-            pass
-        try:
-            self.browser.close()
-        except Exception:
-            pass
-        try:
-            self.playwright.stop()
-        except Exception:
-            pass
-        try:
-            self.tmpdir_obj.cleanup()
-        except Exception:
-            pass
 
 
 @st.cache_resource(show_spinner=False)
@@ -570,81 +443,3 @@ def capture_kakao_satellite_http(
         result["wide"] = renderer.render_to_pil(lat=lat, lon=lon, level=wide_level, map_type=map_type)
 
     return result
-
-
-# ============================================================
-# Batch helper
-# ============================================================
-def analyze_one_coordinate(
-    js_key: str,
-    rest_key: Optional[str],
-    lat: float,
-    lng: float,
-    mode: str,
-    map_type: str,
-    wide_level: int,
-    roof_level: int,
-    model,
-    preprocess,
-    tokenizer,
-    device: str,
-    artifacts: Dict[str, Any],
-) -> Dict[str, Any]:
-    images = capture_kakao_satellite_http(
-        js_key=js_key,
-        lat=lat,
-        lon=lng,
-        wide_level=wide_level,
-        roof_level=roof_level,
-        map_type=map_type,
-        width=896,
-        height=576,
-        capture_wide=True,
-    )
-
-    wide_img = images["wide"]
-    roof_img = images["roof"]
-
-    roof_result = classify_pil_image(
-        pil_img=roof_img,
-        mode=mode,
-        model=model,
-        preprocess=preprocess,
-        tokenizer=tokenizer,
-        device=device,
-        artifacts=artifacts,
-    )
-
-    wide_result = classify_pil_image(
-        pil_img=wide_img,
-        mode=mode,
-        model=model,
-        preprocess=preprocess,
-        tokenizer=tokenizer,
-        device=device,
-        artifacts=artifacts,
-    )
-
-    address_text = None
-    if rest_key:
-        try:
-            rev = reverse_geocode(rest_key, lat, lng)
-            address_text = format_reverse_address(rev)
-        except Exception:
-            address_text = None
-
-    return {
-        "latitude": lat,
-        "longitude": lng,
-        "resolved_address": address_text,
-        "roof_label": roof_result["label"],
-        "roof_probability": float(roof_result["probability"]),
-        "roof_score": float(roof_result["score"]),
-        "wide_label": wide_result["label"],
-        "wide_probability": float(wide_result["probability"]),
-        "wide_score": float(wide_result["score"]),
-        "final_label": roof_result["label"],
-        "final_probability": float(roof_result["probability"]),
-        "mode": mode,
-    }
-```
