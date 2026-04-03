@@ -257,7 +257,38 @@ def load_artifacts() -> Dict[str, Any]:
 
     return artifacts
 
+@st.cache_resource
+def load_clip_model(
+    model_name: str = "ViT-B-32",
+    pretrained: str = "openai",
+    device_str: str | None = None,
+):
+    """
+    CLIP 모델, 전처리 함수, tokenizer, device를 로드해서 반환한다.
 
+    Returns
+    -------
+    model : open_clip model
+    preprocess : callable
+    tokenizer : callable
+    device : torch.device
+    """
+    if device_str is None:
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    device = torch.device(device_str)
+
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        model_name=model_name,
+        pretrained=pretrained,
+    )
+    tokenizer = open_clip.get_tokenizer(model_name)
+
+    model = model.to(device)
+    model.eval()
+
+    return model, preprocess, tokenizer, device
+    
 @torch.no_grad()
 def encode_pil_image(model, preprocess, pil_img: Image.Image, device: str) -> np.ndarray:
     x = preprocess(pil_img.convert("RGB")).unsqueeze(0).to(device)
